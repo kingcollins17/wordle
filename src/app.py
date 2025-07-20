@@ -82,8 +82,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FastAPI with MySQL and Redis",
-    description="FastAPI application with environment dependency injection, MySQL connection management, and Redis service",
+    title="Wordle",
+    description="A highly scalable and efficient multiplayer game servier for Wordle",
     lifespan=lifespan,
 )
 
