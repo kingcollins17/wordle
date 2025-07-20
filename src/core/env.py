@@ -18,12 +18,21 @@ class Environment:
         self.redis_host = os.getenv("REDIS_HOST")
         self.redis_port = int(os.getenv("REDIS_PORT", 6379))
         self.redis_db = int(os.getenv("REDIS_DB", 0))
+        self.redis_username = os.getenv("REDIS_USERNAME", "default")
+        self.redis_password = os.getenv("REDIS_PASSWORD")
+        # Construct REDIS_URL if not provided
+        default_url = (
+            f"redis://{self.redis_username}:{self.redis_password}"
+            f"@{self.redis_host}:{self.redis_port}"
+        )
+        self.redis_url = os.getenv("REDIS_URL", default=default_url)
 
     def __str__(self):
         return (
             f"MySQL -> Host: {self.db_host}, Port: {self.db_port}, User: {self.db_user}, "
             f"Password: {self.db_password}, DB: {self.db_name}\n"
-            f"Redis -> Host: {self.redis_host}, Port: {self.redis_port}, DB: {self.redis_db}"
+            f"Redis -> Host: {self.redis_host}, Port: {self.redis_port}, DB: {self.redis_db}, "
+            f"User: {self.redis_username}, Password: {self.redis_password}, URL: {self.redis_url}"
         )
 
     def validate(self) -> bool:
@@ -34,6 +43,7 @@ class Environment:
             self.db_password,
             self.db_name,
             self.redis_host,
+            self.redis_password,
         ]
         return all(var is not None for var in required_vars)
 
@@ -49,7 +59,14 @@ class Environment:
 
     def get_redis_config(self) -> dict:
         """Get Redis configuration as a dictionary."""
-        return {"host": self.redis_host, "port": self.redis_port, "db": self.redis_db}
+        return {
+            "host": self.redis_host,
+            "port": self.redis_port,
+            "db": self.redis_db,
+            "username": self.redis_username,
+            "password": self.redis_password,
+            "url": self.redis_url,
+        }
 
 
 # Global environment instance

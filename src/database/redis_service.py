@@ -24,7 +24,8 @@ class RedisService:
             async with self._connection_lock:
                 if self.redis is None:  # Double-check locking
                     try:
-                        redis_url = f"redis://{self.env.redis_host}:{self.env.redis_port}/{self.env.redis_db}"
+                        # redis_url = f"redis://{self.env.redis_host}:{self.env.redis_port}/{self.env.redis_db}"
+                        redis_url = self.env.redis_url
                         self.redis = aioredis.from_url(
                             redis_url,
                             decode_responses=True,

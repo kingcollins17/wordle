@@ -1,0 +1,1 @@
+mysql --host wordle-collinsxnnanna-9935.e.aivencloud.com --user avnadmin --password=AVNS_CNJhPu4BOsO1fYzDsvr --port 16389
