@@ -1,0 +1,12 @@
+class APITags:
+    APP_NAME = "Wordle"
+    ACCOUNT = "Account"
+    USERS = "Users"
+    AUTH = "Auth"
+    TOURNAMENTS = "Tournaments"
+    GAMES = "Games"
+    LEADERBOARD = "Leaderboard"
+    WORDS = "Words"
+    SETTINGS = "Settings"
+    ADMIN = "Admin"
+    STATS = "Stats"
