@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Literal
 from enum import Enum
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.game.game_algorithm import (
     GuessResult,
@@ -37,7 +37,8 @@ class PlayerInfo(BaseModel):
     player_id: str
     username: Optional[str] = None
     role: PlayerRole
-    secret_word: Optional[str] = None
+    secret_words: List[str] = Field(..., min_items=1)
+
     attempts: List[GuessAttempt] = Field(...)
     score: int = 0
     connected: bool = True
@@ -48,6 +49,7 @@ class PlayerInfo(BaseModel):
 
 class GameSettings(BaseModel):
 
+    rounds: int = 1  # Number of rounds per match
     max_attempts: int = 6
     word_length: int = 4
     round_time_limit: int = 60  # seconds per round
@@ -71,6 +73,7 @@ class GameSession(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     players: Dict[str, PlayerInfo]  # keyed by user_id
     current_turn: PlayerRole  # user_id
+    current_round: int = Field(default=1)
     game_state: GameState = Field(default=GameState.waiting)
     settings: GameSettings
     turn_timer_expires_at: Optional[datetime] = None
@@ -78,6 +81,29 @@ class GameSession(BaseModel):
 
     class Config:
         use_enum_values = True
+
+    def is_last_round(self) -> bool:
+        """Is this is the last round"""
+        return self.current_round == self.settings.rounds
+
+    def next_round(self) -> bool:
+        if self.current_round < self.settings.rounds:
+            self.current_round += 1
+            return True
+        return False
+
+    def next_turn(self):
+        """Switch to the next player's turn and optionally reset turn timer"""
+        self.current_turn = (
+            PlayerRole.player2
+            if self.current_turn == PlayerRole.player1
+            else PlayerRole.player1
+        )
+
+        if self.settings.round_time_limit:
+            self.turn_timer_expires_at = datetime.utcnow() + timedelta(
+                seconds=self.settings.round_time_limit
+            )
 
 
 _eg = {

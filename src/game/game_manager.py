@@ -36,6 +36,7 @@ class GameManager:
 
         self._session_locks: Dict[str, asyncio.Lock] = {}  # session_id -> asyncio.Lock
 
+        self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
 
         # Redis keys
@@ -75,76 +76,103 @@ class GameManager:
         self,
         player1_user: WordleUser,
         player2_user: WordleUser,
-        player1_secret_word: str,
-        player2_secret_word: str,
+        player1_secret_words: List[str],
+        player2_secret_words: List[str],
         settings: Optional[GameSettings] = None,
     ) -> GameSession:
         """Create a new game session between two players"""
+        async with self._lock:
+            if settings is None:
+                settings = GameSettings()
 
-        if settings is None:
-            settings = GameSettings()
+            if len(player1_secret_words) != settings.rounds:
+                raise GameError(f"Player 1 must provide {settings.rounds} secret words")
+            if len(player2_secret_words) != settings.rounds:
 
-        # Check if players are already in games (using device_id as key)
-        if player1_user.device_id in self.player_to_session:
-            raise GameError(f"Player {player1_user.username} is already in a game")
-        if player2_user.device_id in self.player_to_session:
-            raise GameError(f"Player {player2_user.username} is already in a game")
+                raise GameError(f"Player 2 must provide {settings.rounds} secret words")
 
-        if len(player1_secret_word) != settings.word_length:
-            raise GameError(
-                f"Player {player1_user.username} word length is not allowed"
+            # Check if players are already in games (using device_id as key)
+            if player1_user.device_id in list(self.player_to_session.keys()):
+                raise GameError(
+                    f"Player p1 {player1_user.username} is already in a game"
+                )
+            if player2_user.device_id in list(self.player_to_session.keys()):
+                raise GameError(
+                    f"Player p2 {player2_user.username} is already in a game"
+                )
+
+            for word in player1_secret_words:
+                if len(word) != settings.word_length:
+                    raise GameError(
+                        f"Player 1 word '{word}' does not match word length {settings.word_length}"
+                    )
+
+            for word in player2_secret_words:
+                if len(word) != settings.word_length:
+                    raise GameError(
+                        f"Player 2 word '{word}' does not match word length {settings.word_length}"
+                    )
+
+            # Generate session ID and select words
+            # session_id = str(uuid4())
+            session_id = "0fa16c0c-54f8-486b-9026-a57b72bf927e"
+
+            # Create player info
+            player1_info = PlayerInfo(
+                player_id=player1_user.device_id,
+                username=player1_user.username,
+                role=PlayerRole.player1,
+                secret_words=player1_secret_words,
+                attempts=[],
             )
 
-        if len(player2_secret_word) != settings.word_length:
-            raise GameError(
-                f"Player {player2_user.username} word length is not allowed"
+            player2_info = PlayerInfo(
+                player_id=player2_user.device_id,
+                username=player2_user.username,
+                role=PlayerRole.player2,
+                secret_words=player2_secret_words,
+                attempts=[],
             )
 
-        # Generate session ID and select words
-        # session_id = str(uuid4())
-        session_id = "0fa16c0c-54f8-486b-9026-a57b72bf927e"
+            # Determine if bot is involved
+            one_is_bot = player1_user.device_id.startswith(
+                "bot_"
+            ) or player2_user.device_id.startswith("bot_")
 
-        # Create player info
-        player1_info = PlayerInfo(
-            player_id=player1_user.device_id,
-            username=player1_user.username,
-            role=PlayerRole.player1,
-            secret_word=player1_secret_word,
-            attempts=[],
-        )
-        player2_info = PlayerInfo(
-            player_id=player2_user.device_id,
-            username=player2_user.username,
-            role=PlayerRole.player2,
-            secret_word=player2_secret_word,
-            attempts=[],
-        )
+            current_turn = (
+                PlayerRole.player1
+                if one_is_bot
+                else random.choice([PlayerRole.player1, PlayerRole.player2])
+            )
+            # Create game session
+            game_session = GameSession(
+                session_id=session_id,
+                players={
+                    player1_user.device_id: player1_info,
+                    player2_user.device_id: player2_info,
+                },
+                game_state=GameState.waiting,
+                current_turn=current_turn,
+                settings=settings,
+            )
 
-        # Create game session
-        game_session = GameSession(
-            session_id=session_id,
-            players={
-                player1_user.device_id: player1_info,
-                player2_user.device_id: player2_info,
-            },
-            game_state=GameState.waiting,
-            current_turn=random.choice([PlayerRole.player1, PlayerRole.player2]),
-            settings=settings,
-        )
+            # Store in memory and Redis
+            self.active_games[session_id] = game_session
+            self.player_to_session[player1_user.device_id] = session_id
+            self.player_to_session[player2_user.device_id] = session_id
 
-        # Store in memory and Redis
-        self.active_games[session_id] = game_session
-        self.player_to_session[player1_user.device_id] = session_id
-        self.player_to_session[player2_user.device_id] = session_id
+            await self._save_game_to_redis(game_session)
+            await self._update_player_session_mapping(
+                player1_user.device_id, session_id
+            )
+            await self._update_player_session_mapping(
+                player2_user.device_id, session_id
+            )
 
-        await self._save_game_to_redis(game_session)
-        await self._update_player_session_mapping(player1_user.device_id, session_id)
-        await self._update_player_session_mapping(player2_user.device_id, session_id)
-
-        logger.info(
-            f"Created game session {session_id} between {player1_user.username} and {player2_user.username}"
-        )
-        return game_session
+            logger.info(
+                f"Created game session {session_id} between {player1_user.username} and {player2_user.username}"
+            )
+            return game_session
 
     async def start_game(self, session_id: str) -> bool:
         """Start a game session"""
@@ -203,7 +231,9 @@ class GameManager:
             raise GameError(f"Game session {session_id} not found")
 
         game_session = self.active_games[session_id]
+
         player_info = game_session.players[player_id]
+        current_round = game_session.current_round
 
         opponent_id = self._get_opponent_id(game_session, player_id)
         opponent_info = game_session.players[opponent_id]
@@ -230,9 +260,23 @@ class GameManager:
         if player_id not in game_session.players.keys():
             raise GameError(f"Player {player_info.username} is not in this game")
 
+        if len(guess) != game_session.settings.word_length:
+            await self.websocket_manager.send_to_device(
+                device_id=player_id,
+                message=WebSocketMessage(
+                    type=MessageType.INFO,
+                    data=InfoPayload(
+                        message=f"Guess length must be {game_session.settings.word_length}",
+                    ),
+                ),
+            )
+            return
+
+        opponents_secret_word = opponent_info.secret_words[current_round - 1]
+
         result = self._evaluate_guess(
             guess,
-            target_word=opponent_info.secret_word,
+            target_word=opponents_secret_word,
         )
         # update attempt state
         attempt = GuessAttempt(
@@ -241,20 +285,37 @@ class GameManager:
             guess=guess,
         )
         player_info.attempts.append(attempt)
+
         if result.is_correct():
-            print(f"Guess {guess} is correct now")
-            await self._update_game_session(game_session)
-            await self.end_game(
-                session_id,
-                winner_id=player_id,
-                reason=f"Player {player_info.username} won",
-            )
+            player_info.score += 1
+            if game_session.is_last_round():
+                winner = (
+                    player_info
+                    if player_info.score > opponent_info.score
+                    else opponent_info
+                )
+                await self.end_game(
+                    session_id,
+                    winner_id=winner.player_id,
+                    reason=f"Player {winner.username} won",
+                )
+            else:
+
+                game_session.next_turn()
+                game_session.next_round()
+                await self._update_game_session(game_session)
+                await self.broadcast_game_update(
+                    session_id,
+                    MessageType.RESULT,
+                    data=ResultPayload(
+                        round_winner=player_id,
+                        guess=guess,
+                        result=attempt,
+                    ),
+                )
 
         else:
-            game_session.current_turn = opponent_info.role
-            game_session.turn_timer_expires_at = datetime.utcnow() + timedelta(
-                seconds=game_session.settings.round_time_limit
-            )
+            game_session.next_turn()
             await self._update_game_session(game_session)
 
             await self.broadcast_game_update(
@@ -305,6 +366,7 @@ class GameManager:
     async def get_game_session(self, session_id: str) -> Optional[GameSession]:
         """Get a game session by ID"""
         if session_id in self.active_games:
+            print("game in active games")
             return self.active_games[session_id]
 
         # Try to load from Redis
@@ -312,10 +374,11 @@ class GameManager:
 
     async def get_player_game_session(self, player_id: str) -> Optional[GameSession]:
         """Get the game session a player is currently in"""
-        if player_id in self.player_to_session:
-            session_id = self.player_to_session[player_id]
-            return await self.get_game_session(session_id)
-        return None
+        async with self._lock:
+            if player_id in list(self.player_to_session.keys()):
+                session_id = self.player_to_session[player_id]
+                return await self.get_game_session(session_id)
+            return None
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for a session"""
@@ -325,6 +388,9 @@ class GameManager:
 
     def _evaluate_guess(self, guess: str, target_word: str) -> GuessResult:
         """Evaluate a guess against the target word"""
+        assert len(guess) == len(
+            target_word
+        ), f"Length of target and guess do not match {target_word} {guess}"
         return GameAlgorithm().evaluate_guess(target_word, guess)
 
     def _get_opponent_id(self, game_session: GameSession, player_id: str) -> str:

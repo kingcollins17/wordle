@@ -127,6 +127,49 @@ class WebSocketManager:
             logger.error(f"Failed to connect device {device_id}: {e}")
             return False
 
+    async def refresh_connection(
+        self,
+        websocket: WebSocket,
+        device_id: str,
+        user: Optional[WordleUser] = None,
+    ) -> bool:
+        """Refresh an existing WebSocket connection without calling `accept()`"""
+        try:
+            # ✅ Abort if socket is disconnected
+            if websocket.client_state != WebSocketState.CONNECTED:
+                logger.warning(
+                    f"Cannot refresh connection: WebSocket for {device_id} is not connected"
+                )
+                return False
+
+            # If device already connected, disconnect the old connection
+            if device_id in self.connections:
+                await self._cleanup_connection(device_id, "Refreshing connection")
+
+            now = datetime.utcnow()
+
+            # Create new connection info
+            connection_info = ConnectionInfo(
+                device_id=device_id,
+                websocket=websocket,
+                user=user,
+                connected_at=now,
+                last_heartbeat=now,
+            )
+
+            # Store connection
+            self.connections[device_id] = connection_info
+
+            # Update Redis
+            await self._update_connection_in_redis(device_id, connection_info)
+
+            logger.info(f"WebSocket connection refreshed for device: {device_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to refresh connection for device {device_id}: {e}")
+            return False
+
     async def disconnect(self, device_id: str, reason: str = "Client disconnect"):
         """Disconnect a WebSocket connection"""
         if device_id not in self.connections:

@@ -5,7 +5,7 @@ from .game_session import GameSession, PlayerInfo, PlayerRole, GuessAttempt
 
 
 class PowerUpType(str, Enum):
-    FISH_LETTERS = "fish_letters"
+    FISH_OUT = "fish_out"
     AI_MEANING = "ai_meaning"
     REVEAL_LETTER = "reveal_letter"
 
@@ -13,10 +13,11 @@ class PowerUpType(str, Enum):
 class MessageType(str, Enum):
     # Core game
     INIT = "init"
-    WAITING = "set_word"
+    WAITING = "waiting"
+    RESULT = "result"  # send result when a round is complete, but if game is over, send game over
     GUESS = "guess"
     TURN = "turn"
-    RESULT = "result"
+    CONFIGURE = "configure"
     GAME_OVER = "game_over"
     GAME_STATE = "game_state"
 
@@ -44,7 +45,12 @@ class GameStatePayload(GameSession): ...
 
 
 class WaitingPayload(BaseModel):
-    waiting_for: PlayerRole
+    waiting_for: str
+
+
+class ConfigurePayload(BaseModel):
+    rounds: int = Field(default=1, description="Number of rounds per match")
+    word_length: int = Field(default=4, description="Length of the secret word")
 
 
 class GuessPayload(BaseModel):
@@ -66,10 +72,9 @@ class TurnPayload(BaseModel):
 
 
 class ResultPayload(BaseModel):
-    from_player: str
+    round_winner: str
     guess: str
-    correct: bool
-    matches: int
+    result: GuessAttempt
 
 
 class GameOverPayload(BaseModel):
