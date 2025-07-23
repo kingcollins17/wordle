@@ -32,6 +32,7 @@ class GameManager:
         self.redis = redis_service
         self.websocket_manager = websocket_manager
         self.active_games: Dict[str, GameSession] = {}  # session_id -> GameSession
+        self.after_game_handlers: Dict[str, List[AfterGameHandler]] = {}
         self.player_to_session: Dict[str, str] = {}  # device_id -> session_id
 
         self._session_locks: Dict[str, asyncio.Lock] = {}  # session_id -> asyncio.Lock
@@ -123,6 +124,19 @@ class GameManager:
                 username=player1_user.username,
                 role=PlayerRole.player1,
                 secret_words=player1_secret_words,
+                power_ups=[
+                    PowerUp(
+                        type=PowerUpType.REVEAL_LETTER,
+                        remaining=player1_user.reveal_letter,
+                    ),
+                    PowerUp(type=PowerUpType.FISH_OUT, remaining=player1_user.fish_out),
+                    PowerUp(
+                        type=PowerUpType.AI_MEANING,
+                        remaining=player1_user.ai_meaning,
+                    ),
+                ],
+                score=0,
+                connected=True,
                 attempts=[],
             )
 
@@ -131,6 +145,17 @@ class GameManager:
                 username=player2_user.username,
                 role=PlayerRole.player2,
                 secret_words=player2_secret_words,
+                power_ups=[
+                    PowerUp(
+                        type=PowerUpType.REVEAL_LETTER,
+                        remaining=player2_user.reveal_letter,
+                    ),
+                    PowerUp(type=PowerUpType.FISH_OUT, remaining=player2_user.fish_out),
+                    PowerUp(
+                        type=PowerUpType.AI_MEANING,
+                        remaining=player2_user.ai_meaning,
+                    ),
+                ],
                 attempts=[],
             )
 
@@ -200,6 +225,15 @@ class GameManager:
         )
         logger.info(f"Started game session {session_id}")
         return True
+
+    def register_after_game_handler(
+        self,
+        session_id: str,
+        handler: AfterGameHandler,
+    ):
+        if session_id not in self.after_game_handlers:
+            self.after_game_handlers[session_id] = []
+        self.after_game_handlers[session_id].append(handler)
 
     async def _update_game_session(self, session: GameSession):
         """Safely update the game session state in memory and Redis using a lock"""
@@ -294,6 +328,14 @@ class GameManager:
                     if player_info.score > opponent_info.score
                     else opponent_info
                 )
+                await self.broadcast_game_update(
+                    session_id,
+                    MessageType.GUESS,
+                    data=GuessPayload(
+                        attempt_result=attempt,
+                        current_turn=game_session.current_turn,
+                    ),
+                )
                 await self.end_game(
                     session_id,
                     winner_id=winner.player_id,
@@ -304,6 +346,14 @@ class GameManager:
                 game_session.next_turn()
                 game_session.next_round()
                 await self._update_game_session(game_session)
+                await self.broadcast_game_update(
+                    session_id,
+                    MessageType.GUESS,
+                    data=GuessPayload(
+                        attempt_result=attempt,
+                        current_turn=game_session.current_turn,
+                    ),
+                )
                 await self.broadcast_game_update(
                     session_id,
                     MessageType.RESULT,
@@ -326,6 +376,61 @@ class GameManager:
                     current_turn=game_session.current_turn,
                 ),
             )
+
+    async def use_power_up(
+        self,
+        player_id: str,
+        power_up_type: PowerUpType,
+        already_revealed_indices: Optional[List[int]] = None,
+        already_fished_letters: Optional[List[str]] = None,
+    ) -> Any:
+        game_session = await self.get_player_game_session(player_id)
+        if not game_session:
+            raise GameError("No active game session found for player")
+
+        player_info = game_session.players[player_id]
+
+        if game_session.current_turn != player_info.role:
+            raise GameError("It's not your turn to use a power-up")
+        # Fetch opponent info to get their current secret word
+        opponent_id = self._get_opponent_id(game_session, player_id)
+        opponent_info = game_session.players[opponent_id]
+        secret_word = opponent_info.secret_words[game_session.current_round - 1]
+
+        # Find the power-up
+        power_up = next(
+            (p for p in player_info.power_ups if p.type == power_up_type), None
+        )
+
+        if not power_up:
+            raise GameError(f"{power_up_type.value} power-up not found")
+        if power_up.remaining <= 0:
+            raise GameError(f"No remaining uses for {power_up_type.value}")
+
+        algorithm = GameAlgorithm()
+
+        # Dispatch logic based on power-up type
+        if power_up_type == PowerUpType.FISH_OUT:
+            already_fished_letters = already_fished_letters or []
+            result = algorithm.fishout(secret_word, already_fished_letters)
+
+        elif power_up_type == PowerUpType.REVEAL_LETTER:
+            already_revealed_indices = already_revealed_indices or []
+            result = algorithm.reveal_letter(secret_word, already_revealed_indices)
+
+        elif power_up_type == PowerUpType.AI_MEANING:
+            result = algorithm.ai_meaning(secret_word)
+
+        else:
+            raise GameError(f"Unknown power-up type: {power_up_type.value}")
+
+        # Decrement power-up use
+        power_up.remaining -= 1
+
+        # Update and persist session
+        await self._update_game_session(game_session)
+
+        return result
 
     async def end_game(
         self,
@@ -357,6 +462,15 @@ class GameManager:
             ),
         )
         await self.websocket_manager.disconnect_all(list(game_session.players.keys()))
+        # Run all after-game handlers
+        handlers = self.after_game_handlers.get(session_id, [])
+        for handler in handlers:
+            try:
+                await handler(game_session)
+            except Exception as e:
+                logger.error(f"Error in after-game handler for {session_id}: {e}")
+
+        self.after_game_handlers.pop(session_id, None)
         # Clean up
         await self._cleanup_game_session(session_id)
 
@@ -366,7 +480,6 @@ class GameManager:
     async def get_game_session(self, session_id: str) -> Optional[GameSession]:
         """Get a game session by ID"""
         if session_id in self.active_games:
-            print("game in active games")
             return self.active_games[session_id]
 
         # Try to load from Redis

@@ -1,13 +1,7 @@
 from pydantic import BaseModel, Field, root_validator, model_validator
 from typing import Any, Union, Literal, Optional, List, Dict
 from enum import Enum
-from .game_session import GameSession, PlayerInfo, PlayerRole, GuessAttempt
-
-
-class PowerUpType(str, Enum):
-    FISH_OUT = "fish_out"
-    AI_MEANING = "ai_meaning"
-    REVEAL_LETTER = "reveal_letter"
+from .game_session import *
 
 
 class MessageType(str, Enum):

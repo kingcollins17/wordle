@@ -1,5 +1,6 @@
 # In your router or controller
 
+from typing import Annotated
 from fastapi import (
     WebSocket,
     WebSocketDisconnect,
@@ -237,7 +238,6 @@ async def matchmaking_ws(
                     rounds=1, word_length=len(secret_word), versusAi=True
                 ),
             )
-            print(f"created game = {game}")
 
         # If playing vs bot, set context and start bot game
         if matched is None:
@@ -422,3 +422,53 @@ async def get_lobby_info(
     )
 
     return BaseResponse[LobbyInfo](data=info)
+
+
+class UsePowerUpRequest(BaseModel):
+    player_id: str
+    power_up_type: PowerUpType
+    already_revealed_indices: Optional[List[int]] = None
+    already_fished_letters: Optional[List[str]] = None
+
+
+@game_router.post("/power-up/use", response_model=BaseResponse[PowerUpResult])
+async def use_power_up(
+    request: UsePowerUpRequest,
+    game_manager: Annotated[GameManager, Depends(get_game_manager)],
+):
+    try:
+        result = await game_manager.use_power_up(
+            player_id=request.player_id,
+            power_up_type=request.power_up_type,
+            already_revealed_indices=request.already_revealed_indices,
+            already_fished_letters=request.already_fished_letters,
+        )
+        response = PowerUpResult(
+            type=request.power_up_type,
+            fished_letter=(
+                result if request.power_up_type == PowerUpType.FISH_OUT else None
+            ),
+            revealed_letter=(
+                RevealedLetter(
+                    letter=result[0],
+                    index=result[1],
+                )
+                if request.power_up_type == PowerUpType.REVEAL_LETTER
+                else None
+            ),
+            ai_meaning=(
+                result if request.power_up_type == PowerUpType.AI_MEANING else None
+            ),
+        )
+        return BaseResponse[PowerUpResult](
+            message="Power-up used successfully",
+            data=response,
+        )
+
+    except GameError as e:
+        logger.error(f"Error using power-up: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        logger.error(f"Unexpected error using power-up: {e}")
+        raise HTTPException(status_code=500, detail="Unexpected error occurred")

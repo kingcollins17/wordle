@@ -1,7 +1,7 @@
 # src/models/game_session.py
 
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Literal
+from typing import Callable, Coroutine, List, Dict, Optional, Literal
 from enum import Enum
 from uuid import UUID
 from datetime import datetime, timedelta
@@ -12,6 +12,36 @@ from src.game.game_algorithm import (
     LetterState,
     GameAlgorithm,
 )
+
+
+class PowerUpType(str, Enum):
+    FISH_OUT = "fish_out"
+    AI_MEANING = "ai_meaning"
+    REVEAL_LETTER = "reveal_letter"
+
+
+class PowerUp(BaseModel):
+    type: PowerUpType
+    remaining: int = Field(..., description="Number of uses left for this power-up")
+
+
+class RevealedLetter(BaseModel):
+    letter: str = Field(..., description="The letter revealed from the opponent's word")
+    index: int = Field(..., description="The position of the revealed letter")
+
+
+class PowerUpResult(BaseModel):
+    type: PowerUpType
+    fished_letter: Optional[str] = Field(
+        None, description="Letter not in the opponent's word (fish_out)"
+    )
+    revealed_letter: Optional[RevealedLetter] = Field(
+        None,
+        description="Letter and its index revealed from the opponent's word (reveal_letter)",
+    )
+    ai_meaning: Optional[str] = Field(
+        None, description="AI-generated meaning of the word (ai_meaning)"
+    )
 
 
 class GameState(str, Enum):
@@ -40,6 +70,7 @@ class PlayerInfo(BaseModel):
     secret_words: List[str] = Field(..., min_items=1)
 
     attempts: List[GuessAttempt] = Field(...)
+    power_ups: List[PowerUp] = Field(default_factory=list)
     score: int = 0
     connected: bool = True
 
@@ -106,24 +137,4 @@ class GameSession(BaseModel):
             )
 
 
-_eg = {
-    "session_id": "123e4567-e89b-12d3-a456-426614174000",
-    "players": {
-        "userA": {
-            "user_id": "userA",
-            "username": "Alice",
-            "score": 2,
-        },
-        "userB": {
-            "user_id": "userB",
-            "username": "Bob",
-            "score": 1,
-        },
-    },
-    "current_turn": "userA",
-    "game_state": "in_progress",
-    "word_data": {
-        "userA": {"target_word": "QUIZ", "masked_word": "_ _ _ _", "guesses": []},
-        "userB": {"target_word": "GAME", "masked_word": "_ _ _ _", "guesses": []},
-    },
-}
+AfterGameHandler = Callable[[GameSession], Coroutine[None, None, None]]

@@ -1,4 +1,6 @@
 from enum import Enum
+import string
+import random
 from pydantic import BaseModel, Field
 from typing import List, Dict
 
@@ -23,6 +25,50 @@ class GuessResult(BaseModel):
 
 
 class GameAlgorithm:
+    def ai_meaning(self, word: str) -> str:
+        """
+        Mocked method to return the AI-generated meaning of a word.
+        This should be replaced with an actual AI client integration.
+        """
+        word = word.upper()
+        return f"(AI-generated meaning of '{word}' would appear here)"
+
+    def reveal_letter(
+        self, secret_word: str, already_revealed_indices: List[int]
+    ) -> tuple[str, int]:
+        """
+        Reveal a random letter from the secret word that hasn't been revealed yet.
+        Returns a tuple (letter, index).
+        Raises ValueError if all letters have been revealed.
+        """
+        secret_word = secret_word.upper()
+        unrevealed_indices = [
+            i for i in range(len(secret_word)) if i not in already_revealed_indices
+        ]
+
+        if not unrevealed_indices:
+            raise ValueError("All letters have already been revealed")
+
+        index = random.choice(unrevealed_indices)
+        return secret_word[index], index
+
+    def fishout(self, secret_word: str, already_fished_out: List[str]) -> str:
+        """
+        Return a random letter that is NOT in the secret word and NOT in already_fished_out.
+        Raises ValueError if no such letter is available.
+        """
+        secret_letters = set(secret_word.upper())
+        all_letters = set(string.ascii_uppercase)
+        excluded_letters = secret_letters.union(
+            set(letter.upper() for letter in already_fished_out)
+        )
+
+        possible_letters = list(all_letters - excluded_letters)
+
+        if not possible_letters:
+            raise ValueError("No more letters to fish out")
+
+        return random.choice(possible_letters)
 
     def evaluate_guess(self, secret_word: str, guess: str) -> GuessResult:
         secret_word = secret_word.upper()
