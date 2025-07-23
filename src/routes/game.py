@@ -228,7 +228,6 @@ async def matchmaking_ws(
         if not game:
             # if theres a game means the first person in the room has created the game
             # Create game with player1 and
-            print(f"player 1 and 2 p1={player1_user}, p2={player2_user}")
             game = await game_manager.create_game(
                 player1_user=player1_user,
                 player2_user=player2_user,
@@ -237,6 +236,12 @@ async def matchmaking_ws(
                 settings=GameSettings(
                     rounds=1, word_length=len(secret_word), versusAi=True
                 ),
+            )
+            scorer = ScoringAfterGameHandler(user_repo)
+            game_manager.register_after_game_handler(game.session_id, scorer)
+            game_manager.register_after_game_handler(
+                game.session_id,
+                PowerUpPersistenceAfterGameHandler(user_repo),
             )
 
         # If playing vs bot, set context and start bot game
@@ -375,6 +380,12 @@ async def lobby_ws(
                     player1_secret_words=player1_secret_words,
                     player2_secret_words=player2_secret_words,
                     settings=lobby.settings,
+                )
+                scorer = ScoringAfterGameHandler(repo)
+                game_manager.register_after_game_handler(game.session_id, scorer)
+                game_manager.register_after_game_handler(
+                    game.session_id,
+                    PowerUpPersistenceAfterGameHandler(repo),
                 )
 
         await ws_manager.send_to_device(

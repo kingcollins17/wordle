@@ -1,7 +1,7 @@
-DROP DATABASE IF EXISTS `wordle`;
-CREATE DATABASE `wordle` DEFAULT CHARACTER SET utf8 COLLATE utf8_unicode_ci;
+-- DROP DATABASE IF EXISTS `wordle`;
+-- CREATE DATABASE `wordle` DEFAULT CHARACTER SET utf8 COLLATE utf8_unicode_ci;
 
-USE `wordle`;
+-- USE `wordle`;
 
 DROP TABLE IF EXISTS `users`;
 

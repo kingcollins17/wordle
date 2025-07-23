@@ -1,7 +1,8 @@
 # src/models/game_session.py
 
+from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
-from typing import Callable, Coroutine, List, Dict, Optional, Literal
+from typing import Any, Callable, Coroutine, List, Dict, Optional, Literal
 from enum import Enum
 from uuid import UUID
 from datetime import datetime, timedelta
@@ -137,4 +138,19 @@ class GameSession(BaseModel):
             )
 
 
-AfterGameHandler = Callable[[GameSession], Coroutine[None, None, None]]
+class AfterGameHandler(ABC):
+    async def __call__(self, game: GameSession) -> Any:
+        return await self.handle(game)
+
+    @abstractmethod
+    async def handle(self, game: GameSession) -> Any:
+        """
+        Handle the game session after it has ended.
+
+        Args:
+            game: The GameSession object that has ended.
+
+        Returns:
+            Any: Result of the handling operation.
+        """
+        pass
