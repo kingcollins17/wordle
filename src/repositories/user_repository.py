@@ -69,22 +69,32 @@ class UserRepository:
         except Exception as e:
             logger.warning(f"Cache invalidation error: {e}")
 
-    async def get_user_by_device_id(self, device_id: str) -> Optional[Dict[str, Any]]:
-        """Get user by device_id with Redis caching."""
-        cache_key = self._get_cache_key("device_id", device_id)
+    async def get_user_by_device_id(
+        self,
+        device_id: str,
+        bypass_cache: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Get user by device_id with Redis caching.
 
-        # Try cache first
-        cached_user = await self._get_user_from_cache(cache_key)
-        if cached_user:
-            return cached_user
+        Args:
+            device_id: The device ID to look up
+            bypass_cache: If True, skips Redis cache and queries database directly (default: False)
+        """
+        if not bypass_cache:
+            cache_key = self._get_cache_key("device_id", device_id)
+            # Try cache first
+            cached_user = await self._get_user_from_cache(cache_key)
+            if cached_user:
+                return cached_user
 
-        # Cache miss - query database
+        # Either bypass_cache is True or cache miss - query database
         try:
             query, params = self.qm.select_one({"device_id": device_id})
             user_data = await self.db.execute_query(query, params, fetch="one")
 
-            if user_data:
-                # Cache the result before returning
+            if user_data and not bypass_cache:
+                # Cache the result before returning (unless we're bypassing cache)
+                cache_key = self._get_cache_key("device_id", device_id)
                 await self._cache_user(cache_key, user_data)
 
                 # Also cache by other unique fields if present
@@ -104,7 +114,7 @@ class UserRepository:
             return user_data
         except Exception as e:
             logger.error(f"Database query error for device_id {device_id}: {e}")
-            raise
+            raise e
 
     async def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         """Get user by username with Redis caching."""

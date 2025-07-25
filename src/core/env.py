@@ -27,13 +27,30 @@ class Environment:
         )
         self.redis_url = os.getenv("REDIS_URL", default=default_url)
 
+        # Gemini AI config
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.gemini_api_url = os.getenv("GEMINI_API_URL")
+        self.gemini_api_model = os.getenv("GEMINI_API_MODEL")
+
     def __str__(self):
         return (
             f"MySQL -> Host: {self.db_host}, Port: {self.db_port}, User: {self.db_user}, "
             f"Password: {self.db_password}, DB: {self.db_name}\n"
             f"Redis -> Host: {self.redis_host}, Port: {self.redis_port}, DB: {self.redis_db}, "
-            f"User: {self.redis_username}, Password: {self.redis_password}, URL: {self.redis_url}"
+            f"User: {self.redis_username}, Password: {self.redis_password}, URL: {self.redis_url}\n"
+            f"Gemini -> API Key: {'set' if self.gemini_api_key else 'not set'}, "
+            f"URL: {self.gemini_api_url}, Model: {self.gemini_api_model}"
         )
+
+    def get_mysql_config(self) -> dict:
+        """Get MySQL configuration as a dictionary."""
+        return {
+            "host": self.db_host,
+            "port": self.db_port,
+            "user": self.db_user,
+            "password": self.db_password,
+            "db": self.db_name,
+        }
 
     def validate(self) -> bool:
         """Validate that all required environment variables are set."""
@@ -44,17 +61,17 @@ class Environment:
             self.db_name,
             self.redis_host,
             self.redis_password,
+            # Add gemini_api_key only if you want it to be required
+            # self.gemini_api_key
         ]
         return all(var is not None for var in required_vars)
 
-    def get_mysql_config(self) -> dict:
-        """Get MySQL configuration as a dictionary."""
+    def get_gemini_config(self) -> dict:
+        """Get Gemini configuration as a dictionary."""
         return {
-            "host": self.db_host,
-            "port": self.db_port,
-            "user": self.db_user,
-            "password": self.db_password,
-            "db": self.db_name,
+            "api_key": self.gemini_api_key,
+            "api_url": self.gemini_api_url,
+            "model": self.gemini_api_model,
         }
 
     def get_redis_config(self) -> dict:

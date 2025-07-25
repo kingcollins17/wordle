@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import Depends
 
+from src.core.ai_service import AiService, get_ai_service
 from src.database.redis_service import RedisService, get_redis
 from src.game.game_algorithm import *
 from .websocket_manager import WebSocketManager, get_websocket_manager
@@ -27,10 +28,15 @@ class GameError(Exception):
 
 class GameManager:
     def __init__(
-        self, redis_service: RedisService, websocket_manager: WebSocketManager
+        self,
+        redis_service: RedisService,
+        websocket_manager: WebSocketManager,
+        ai_service: AiService,
     ):
+
         self.redis = redis_service
         self.websocket_manager = websocket_manager
+        self.ai_service: AiService = ai_service
         self.active_games: Dict[str, GameSession] = {}  # session_id -> GameSession
         self.after_game_handlers: Dict[str, List[AfterGameHandler]] = {}
         self.player_to_session: Dict[str, str] = {}  # device_id -> session_id
@@ -419,7 +425,7 @@ class GameManager:
             result = algorithm.reveal_letter(secret_word, already_revealed_indices)
 
         elif power_up_type == PowerUpType.AI_MEANING:
-            result = algorithm.ai_meaning(secret_word)
+            result = await algorithm.ai_meaning(secret_word, self.ai_service)
 
         else:
             raise GameError(f"Unknown power-up type: {power_up_type.value}")
@@ -665,21 +671,24 @@ _game_manager: Optional[GameManager] = None
 async def get_game_manager(
     redis: RedisService = Depends(get_redis),
     websocket_manager: WebSocketManager = Depends(get_websocket_manager),
+    ai_service: AiService = Depends(get_ai_service),
 ) -> GameManager:
     """Get the game manager instance"""
     global _game_manager
     if _game_manager is None:
-        await _startup_game_manager(redis, websocket_manager)
+        await _startup_game_manager(redis, websocket_manager, ai_service)
     return _game_manager
 
 
 async def _startup_game_manager(
-    redis: RedisService, websocket_manager: WebSocketManager
+    redis: RedisService,
+    websocket_manager: WebSocketManager,
+    ai_service: AiService,
 ):
     """Initialize game manager on startup"""
     global _game_manager
     if _game_manager is None:
-        _game_manager = GameManager(redis, websocket_manager)
+        _game_manager = GameManager(redis, websocket_manager, ai_service)
     await _game_manager.startup()
     logger.info("Game Manager initialized")
 

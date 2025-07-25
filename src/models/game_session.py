@@ -7,6 +7,7 @@ from enum import Enum
 from uuid import UUID
 from datetime import datetime, timedelta
 
+from src.core.ai_service import WordDefinitionResponse
 from src.game.game_algorithm import (
     GuessResult,
     LetterResult,
@@ -40,7 +41,7 @@ class PowerUpResult(BaseModel):
         None,
         description="Letter and its index revealed from the opponent's word (reveal_letter)",
     )
-    ai_meaning: Optional[str] = Field(
+    ai_meaning: Optional[WordDefinitionResponse] = Field(
         None, description="AI-generated meaning of the word (ai_meaning)"
     )
 
@@ -84,7 +85,7 @@ class GameSettings(BaseModel):
     rounds: int = 1  # Number of rounds per match
     max_attempts: int = 6
     word_length: int = 4
-    round_time_limit: int = 60  # seconds per round
+    round_time_limit: int = 120  # seconds per round
     language: str = "en"
     allow_powerups: bool = True
     versusAi: bool = False

@@ -10,6 +10,7 @@ from fastapi import (
     HTTPException,
     WebSocketException,
 )
+from src.core.ai_service import AiService, get_ai_service
 from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.config import Config
@@ -187,7 +188,7 @@ async def matchmaking_ws(
     player1_secret: Optional[str] = None
     player2_secret: Optional[str] = None
     try:
-        matched = await queue.wait_for_match(player_id, timeout=3)
+        matched = await queue.wait_for_match(player_id, timeout=10)
         assert (
             matched is None or matched.player1 != matched.player2
         ), "Player cannot be matched with self"
@@ -214,12 +215,16 @@ async def matchmaking_ws(
 
         else:
             player1_user = WordleUser(
-                **await user_repo.get_user_by_device_id(matched.player1)
+                **await user_repo.get_user_by_device_id(
+                    matched.player1, bypass_cache=True
+                )
             )
             player1_secret = queue.secret_words.get(matched.player1)
             # Matched with another player
             player2_user = WordleUser(
-                **await user_repo.get_user_by_device_id(matched.player2)
+                **await user_repo.get_user_by_device_id(
+                    matched.player2, bypass_cache=True
+                )
             )
             player2_secret = queue.secret_words.get(matched.player2)
 
@@ -372,10 +377,10 @@ async def lobby_ws(
             if not game:
                 game = await game_manager.create_game(
                     player1_user=WordleUser(
-                        **await repo.get_user_by_device_id(player1)
+                        **await repo.get_user_by_device_id(player1, bypass_cache=True)
                     ),
                     player2_user=WordleUser(
-                        **await repo.get_user_by_device_id(player2)
+                        **await repo.get_user_by_device_id(player2, bypass_cache=True)
                     ),
                     player1_secret_words=player1_secret_words,
                     player2_secret_words=player2_secret_words,
@@ -435,6 +440,28 @@ async def get_lobby_info(
     return BaseResponse[LobbyInfo](data=info)
 
 
+class LobbyCodeResponse(BaseModel):
+    lobby_code: str
+
+
+@game_router.get("/generate-code", response_model=BaseResponse[LobbyCodeResponse])
+async def generate_lobby_code(
+    lobby_manager: LobbyManager = Depends(lobby_manager),
+):
+    """
+    Generate a new unique lobby code.
+
+    Returns:
+        BaseResponse containing the newly generated lobby code
+    """
+    lobby_code = lobby_manager.generate_code()
+
+    return BaseResponse[LobbyCodeResponse](
+        data=LobbyCodeResponse(lobby_code=lobby_code),
+        message="Lobby code generated successfully",
+    )
+
+
 class UsePowerUpRequest(BaseModel):
     player_id: str
     power_up_type: PowerUpType
@@ -483,3 +510,17 @@ async def use_power_up(
     except Exception as e:
         logger.error(f"Unexpected error using power-up: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
+
+
+@game_router.get("/test-ai")
+async def use_power_up(
+    word: str,
+    ai_service: AiService = Depends(get_ai_service),
+    # game_manager: Annotated[GameManager, Depends(get_game_manager)],
+):
+    try:
+        result = await ai_service.get_word_definition(word)
+        return result
+    except Exception as e:
+        logger.error(f"Error testing ai service {e}, {type(e)}")
+        raise HTTPException(status_code=500, detail=f"{e}")
