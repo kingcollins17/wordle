@@ -1,7 +1,11 @@
+aiohappyeyeballs==2.6.1
+aiohttp==3.12.14
 aiomysql==0.2.0
+aiosignal==1.4.0
 annotated-types==0.7.0
 anyio==4.9.0
 async-timeout==5.0.1
+attrs==25.3.0
 certifi==2025.7.14
 click==8.2.1
 dnspython==2.7.0
@@ -10,6 +14,7 @@ email_validator==2.2.0
 fastapi==0.116.1
 fastapi-cli==0.0.8
 fastapi-cloud-cli==0.1.4
+frozenlist==1.7.0
 h11==0.16.0
 httpcore==1.0.9
 httptools==0.6.4
@@ -20,7 +25,9 @@ Jinja2==3.1.6
 markdown-it-py==3.0.0
 MarkupSafe==3.0.2
 mdurl==0.1.2
+multidict==6.6.3
 orjson==3.11.0
+propcache==0.3.2
 pydantic==2.11.7
 pydantic-extra-types==2.10.5
 pydantic-settings==2.10.1
@@ -48,3 +55,4 @@ uvicorn==0.35.0
 uvloop==0.21.0
 watchfiles==1.1.0
 websockets==15.0.1
+yarl==1.20.1
