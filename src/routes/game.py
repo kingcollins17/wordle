@@ -21,6 +21,21 @@ from src.game import *
 game_router = APIRouter(prefix="/game", tags=[APITags.GAMES])
 
 
+@game_router.get("")
+async def get_game_session(
+    session_id: str,
+    game_manager: GameManager = Depends(get_game_manager),
+) -> BaseResponse[GameSession]:
+    try:
+        game = await game_manager.get_game_session(session_id)
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        return BaseResponse(data=game, message="Game found")
+    except Exception as e:
+        logger.error(f"Error testing ai service {e}, {type(e)}")
+        raise HTTPException(status_code=500, detail=f"{e}")
+
+
 @game_router.websocket("/ws/game/{game_id}")
 async def game(
     game_id: str,
