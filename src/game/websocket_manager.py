@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from starlette.websockets import WebSocketState
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 from datetime import datetime, timedelta
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi import Depends
@@ -44,6 +44,8 @@ class WebSocketManager:
         # Redis keys
         self.ACTIVE_CONNECTIONS_KEY = "ws:active_connections"
         self.USER_STATUS_KEY_PREFIX = "ws:user_status:"
+
+        self._excluded: Set[str] = {}
 
     async def startup(self):
         """Initialize the WebSocket manager"""
@@ -235,8 +237,18 @@ class WebSocketManager:
 
         logger.info(f"Connection cleaned up for device {device_id}: {reason}")
 
+    async def _can_send_to_device(self, device_id: str) -> bool:
+        if device_id in self._excluded:
+            return False
+        if device_id.startswith("bot_"):
+            return False
+        return True
+
     async def send_to_device(self, device_id: str, message: WebSocketMessage) -> bool:
         """Send a message to a specific device"""
+        can_send = await self._can_send_to_device(device_id)
+        if not can_send:
+            return True
         if device_id not in list(self.connections.keys()):
             logger.warning(f"Attempted to send message to unknown device: {device_id}")
             return False
@@ -346,7 +358,8 @@ class WebSocketManager:
 
     async def _heartbeat_monitor(self):
         """Monitor heartbeats and disconnect stale connections"""
-        while True:
+        # TODO: Monitor heartbeat
+        while False:
             try:
                 await asyncio.sleep(30)  # Check every 30 seconds
 

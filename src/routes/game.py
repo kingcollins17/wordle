@@ -203,7 +203,9 @@ async def matchmaking_ws(
     player1_secret: Optional[str] = None
     player2_secret: Optional[str] = None
     try:
-        matched = await queue.wait_for_match(player_id, timeout=10)
+        matched = await queue.wait_for_match(
+            player_id, timeout=Config.WAITING_ROOM_TIMEOUT
+        )
         assert (
             matched is None or matched.player1 != matched.player2
         ), "Player cannot be matched with self"
@@ -254,7 +256,10 @@ async def matchmaking_ws(
                 player1_secret_words=[player1_secret],
                 player2_secret_words=[player2_secret],
                 settings=GameSettings(
-                    rounds=1, word_length=len(secret_word), versusAi=True
+                    rounds=1,
+                    word_length=len(secret_word),
+                    versusAi=True,
+                    turn_time_limit=Config.DEFAULT_TURN_TIME_LIMIT,
                 ),
             )
             scorer = ScoringAfterGameHandler(user_repo)
@@ -298,7 +303,8 @@ async def lobby_ws(
     lobby_code: str,
     player_id: str = Query(...),
     secret_word: List[str] = Query(...),
-    rounds: int = Query(1),
+    rounds: int = Query(default=1),
+    turn_time_limit: Optional[int] = Query(default=60, description="Turn time limit"),
     lobby_manager: LobbyManager = Depends(lobby_manager),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
     redis_: RedisService = Depends(get_redis),
@@ -351,6 +357,7 @@ async def lobby_ws(
             lobby.settings = GameSettings(
                 rounds=rounds,
                 word_length=word_length,
+                turn_time_limit=turn_time_limit or Config.DEFAULT_TURN_TIME_LIMIT,
             )
 
         try:

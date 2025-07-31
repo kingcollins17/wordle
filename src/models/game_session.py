@@ -86,6 +86,7 @@ class GameSettings(BaseModel):
     max_attempts: int = 6
     word_length: int = 4
     round_time_limit: int = 120  # seconds per round
+    turn_time_limit: int = 5
     language: str = "en"
     allow_powerups: bool = True
     versusAi: bool = False
@@ -133,10 +134,63 @@ class GameSession(BaseModel):
             else PlayerRole.player1
         )
 
-        if self.settings.round_time_limit:
-            self.turn_timer_expires_at = datetime.utcnow() + timedelta(
-                seconds=self.settings.round_time_limit
-            )
+        self.turn_timer_expires_at = datetime.now() + timedelta(
+            seconds=self.settings.turn_time_limit
+        )
+
+    def get_player_by_role(self, role: PlayerRole) -> Optional[PlayerInfo]:
+        """Get player info by their role (player1 or player2)"""
+        for player in self.players.values():
+            if player.role == role:
+                return player
+        return None
+
+    def get_opponent(self, player_id: str) -> Optional[PlayerInfo]:
+        """Get the opponent's PlayerInfo for a given player_id"""
+        current_player = self.players.get(player_id)
+        if not current_player:
+            return None
+
+        opponent_role = (
+            PlayerRole.player2
+            if current_player.role == PlayerRole.player1
+            else PlayerRole.player1
+        )
+        return self.get_player_by_role(opponent_role)
+
+    def get_current_word(self, player_id: str) -> Optional[str]:
+        """Get the current round's secret word for a player"""
+        player = self.players.get(player_id)
+        if not player or not player.secret_words:
+            return None
+        # Assuming each round uses the corresponding word in the list
+        # If there are more rounds than words, use the last word
+        word_index = min(self.current_round - 1, len(player.secret_words) - 1)
+        return player.secret_words[word_index]
+
+    def is_player_turn(self, player_id: str) -> bool:
+        """Check if it's currently the given player's turn"""
+        player = self.players.get(player_id)
+        if not player:
+            return False
+        return player.role == self.current_turn
+
+    def get_player_attempts(self, player_id: str) -> List[GuessAttempt]:
+        """Get all guess attempts for a player"""
+        player = self.players.get(player_id)
+        return player.attempts if player else []
+
+    def get_current_player(self) -> Optional[PlayerInfo]:
+        """Get the PlayerInfo of the player whose turn it is currently"""
+        return self.get_player_by_role(self.current_turn)
+
+    def get_player_by_id(self, player_id: str) -> Optional[PlayerInfo]:
+        """Get PlayerInfo by player_id"""
+        return self.players.get(player_id)
+
+    def both_players_connected(self) -> bool:
+        """Check if both players are currently connected"""
+        return all(player.connected for player in self.players.values())
 
 
 class AfterGameHandler(ABC):

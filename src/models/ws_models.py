@@ -63,6 +63,7 @@ class SetWordPayload(BaseModel):
 
 class TurnPayload(BaseModel):
     player_id: str
+    current_turn: PlayerRole
 
 
 class ResultPayload(BaseModel):
@@ -75,6 +76,7 @@ class GameOverPayload(BaseModel):
     winner_id: Optional[str] = Field(
         ..., description="If winner id is null, means there was no winner"
     )
+    winner: Optional[PlayerInfo] = None
     reason: str
 
 

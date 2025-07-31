@@ -45,6 +45,7 @@ class GameManager:
 
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._ai_turn_check_task: Optional[asyncio.Task] = None
 
         # Redis keys
         self.GAME_SESSION_KEY_PREFIX = "game:session:"
@@ -52,18 +53,21 @@ class GameManager:
         self.ACTIVE_GAMES_KEY = "game:active_sessions"
         self.GAME_TIMER_KEY_PREFIX = "game:timer:"
 
+    # Modify the startup method to start the new task
     async def startup(self):
         """Initialize the game manager"""
         logger.info("Starting Game Manager...")
 
-        # Start background cleanup task
+        # Start background tasks
         self._cleanup_task = asyncio.create_task(self._cleanup_expired_games())
+        self._ai_turn_check_task = asyncio.create_task(self._check_ai_turns())
 
         # Restore active games from Redis if any
         await self._restore_active_games()
 
         logger.info("Game Manager started successfully")
 
+    # Modify the shutdown method to cancel the new task
     async def shutdown(self):
         """Cleanup game manager"""
         logger.info("Shutting down Game Manager...")
@@ -71,6 +75,8 @@ class GameManager:
         # Cancel background tasks
         if self._cleanup_task:
             self._cleanup_task.cancel()
+        if hasattr(self, "_ai_turn_check_task") and self._ai_turn_check_task:
+            self._ai_turn_check_task.cancel()
 
         # End all active games
         session_ids = list(self.active_games.keys())
@@ -217,8 +223,8 @@ class GameManager:
 
         # Update game state
         game_session.game_state = GameState.in_progress
-        game_session.turn_timer_expires_at = datetime.utcnow() + timedelta(
-            seconds=game_session.settings.round_time_limit
+        game_session.turn_timer_expires_at = datetime.now() + timedelta(
+            seconds=game_session.settings.turn_time_limit
         )
         # Save to Redis
         await self._update_game_session(game_session)
@@ -275,8 +281,16 @@ class GameManager:
         player_info = game_session.players[player_id]
         current_round = game_session.current_round
 
-        opponent_id = self._get_opponent_id(game_session, player_id)
-        opponent_info = game_session.players[opponent_id]
+        opponent_info = game_session.get_opponent(player_id)
+        if not opponent_info:
+            await self.websocket_manager.send_to_device(
+                device_id=player_id,
+                message=WebSocketMessage(
+                    type=MessageType.INFO,
+                    data=InfoPayload(message="Opponent not found"),
+                ),
+            )
+            return
 
         if game_session.game_state != GameState.in_progress:
             await self.websocket_manager.send_to_device(
@@ -394,14 +408,13 @@ class GameManager:
         if not game_session:
             raise GameError("No active game session found for player")
 
-        player_info = game_session.players[player_id]
+        player_info = game_session.get_player_by_id(player_id)
 
         if game_session.current_turn != player_info.role:
             raise GameError("It's not your turn to use a power-up")
         # Fetch opponent info to get their current secret word
-        opponent_id = self._get_opponent_id(game_session, player_id)
-        opponent_info = game_session.players[opponent_id]
-        secret_word = opponent_info.secret_words[game_session.current_round - 1]
+        opponent = game_session.get_opponent(player_info.player_id)
+        secret_word = game_session.get_current_word(opponent.player_id)
 
         # Find the power-up
         power_up = next(
@@ -464,6 +477,7 @@ class GameManager:
             MessageType.GAME_OVER,
             data=GameOverPayload(
                 winner_id=winner_id,
+                winner=game_session.get_player_by_id(winner_id),
                 reason=reason,
             ),
         )
@@ -511,11 +525,6 @@ class GameManager:
             target_word
         ), f"Length of target and guess do not match {target_word} {guess}"
         return GameAlgorithm().evaluate_guess(target_word, guess)
-
-    def _get_opponent_id(self, game_session: GameSession, player_id: str) -> str:
-        """Get the opponent's ID"""
-        player_ids = list(game_session.players.keys())
-        return player_ids[0] if player_ids[1] == player_id else player_ids[1]
 
     async def broadcast_game_update(
         self,
@@ -627,9 +636,10 @@ class GameManager:
         """Background task to clean up expired games"""
         while True:
             try:
+
                 await asyncio.sleep(60)  # Check every minute
 
-                current_time = datetime.utcnow()
+                current_time = datetime.now()
                 expired_sessions = []
 
                 for session_id, game_session in list(self.active_games.items()):
@@ -637,14 +647,20 @@ class GameManager:
                     if (
                         game_session.turn_timer_expires_at
                         and current_time > game_session.turn_timer_expires_at
-                        and game_session.game_state == "in_progress"
+                        and game_session.game_state != GameState.waiting
                     ):
 
                         # End game due to timeout
-                        opponent_id = self._get_opponent_id(
-                            game_session, game_session.current_turn
+                        player = game_session.get_player_by_role(
+                            game_session.current_turn
                         )
-                        await self.end_game(session_id, opponent_id, "turn_timeout")
+                        opponent = game_session.get_opponent(player.player_id)
+                        if opponent:
+                            await self.end_game(
+                                session_id,
+                                opponent.player_id,
+                                "turn_timeout",
+                            )
 
                     # Check for games that have been inactive too long
                     time_since_created = current_time - game_session.created_at
@@ -662,6 +678,60 @@ class GameManager:
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup task: {e}")
+
+    # Add this method to the GameManager class
+    async def _check_ai_turns(self):
+        """Background task to check for expired turns in AI games"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Check every 60 minutes
+
+                current_time = datetime.now()
+                sessions_to_update: Set[str] = set()
+
+                for session_id, game_session in list(self.active_games.items()):
+                    # Skip if not versus AI or not player2's turn
+                    if (
+                        not game_session.settings.versusAi
+                        or game_session.current_turn != PlayerRole.player2
+                    ):
+                        continue
+
+                    # Check if turn timer has expired
+                    if (
+                        game_session.turn_timer_expires_at
+                        and current_time > game_session.turn_timer_expires_at
+                    ):
+                        sessions_to_update.add(session_id)
+
+                # Process sessions that need updating
+                for session_id in sessions_to_update:
+                    try:
+                        game_session = self.active_games[session_id]
+                        game_session.next_turn()
+                        await self._update_game_session(game_session)
+
+                        # Broadcast the turn change
+                        await self.broadcast_game_update(
+                            session_id,
+                            MessageType.TURN,
+                            data=TurnPayload(
+                                game_session.get_current_player().player_id,
+                                turn=game_session.current_turn,
+                            ),
+                        )
+                        logger.info(
+                            f"Turn switched in AI game {session_id} due to timeout"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to process AI turn timeout for {session_id}: {e}"
+                        )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in AI turn check task: {e}")
 
 
 # Global game manager instance
