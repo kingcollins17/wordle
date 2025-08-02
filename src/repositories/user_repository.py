@@ -1,7 +1,12 @@
 from typing import Optional, List, Dict, Any
 import logging
-from src.database.mysql_connection_manager import MySQLConnectionManager
-from src.database.redis_service import RedisService
+
+from fastapi import Depends
+from src.database.mysql_connection_manager import (
+    MySQLConnectionManager,
+    get_mysql_manager,
+)
+from src.database.redis_service import RedisService, get_redis
 from src.database.query_manager import QueryManager  # Assumes you saved it separately
 from ..models.wordle_user import WordleUser  # Your Pydantic model
 
@@ -338,3 +343,12 @@ class UserRepository:
         except Exception as e:
             logger.error(f"Cache stats error: {e}")
             return {"error": str(e)}
+
+
+def get_user_repository(
+    mysql=Depends(get_mysql_manager), redis=Depends(get_redis)
+) -> UserRepository:
+    """Dependency injection function for UserRepository"""
+
+    # Create and return a new UserRepository instance
+    return UserRepository(db=mysql, redis=redis)

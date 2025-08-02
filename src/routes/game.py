@@ -14,7 +14,7 @@ from src.core.ai_service import AiService, get_ai_service
 from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.config import Config
-from src.repositories import UserRepository
+from src.repositories import UserRepository, get_user_repository
 from src.database import *
 from src.game import *
 
@@ -546,3 +546,49 @@ async def use_power_up(
     except Exception as e:
         logger.error(f"Error testing ai service {e}, {type(e)}")
         raise HTTPException(status_code=500, detail=f"{e}")
+
+
+class RewardType(str, Enum):
+    COINS = "coins"
+    REVEAL_LETTER = "reveal_letter"
+    FISH_OUT = "fish_out"
+    AI_MEANING = "ai_meaning"
+
+
+class RewardUserRequest(BaseModel):
+    device_id: str = Field(..., description="User's device ID")
+    reward_type: RewardType = Field(..., description="Type of reward to give")
+    amount: int = Field(1, ge=1, description="Amount to increment")
+
+
+@game_router.post("/reward-user", response_model=BaseResponse[WordleUser])
+async def reward_user(
+    request: RewardUserRequest,
+    user_repo: Annotated[UserRepository, Depends(get_user_repository)],
+):
+    try:
+        # Get the current user
+        user = await user_repo.get_user_by_device_id(request.device_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Prepare the update based on reward type
+        update_field = request.reward_type.value
+        updates = {update_field: user[update_field] + request.amount}
+
+        # Update the user
+        await user_repo.update_user_by_device_id(request.device_id, updates)
+
+        # Get the updated user to return
+        updated_user = await user_repo.get_user_by_device_id(
+            request.device_id, bypass_cache=True
+        )
+        return BaseResponse[WordleUser](
+            message="User rewarded successfully", data=WordleUser(**updated_user)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rewarding user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
