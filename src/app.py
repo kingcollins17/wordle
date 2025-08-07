@@ -89,6 +89,8 @@ app = FastAPI(
 
 app.include_router(auth_router)
 app.include_router(game_router)
+app.include_router(lb_router)
+app.include_router(store_router)
 
 
 @app.get("/health")

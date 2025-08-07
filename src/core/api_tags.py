@@ -10,3 +10,4 @@ class APITags:
     SETTINGS = "Settings"
     ADMIN = "Admin"
     STATS = "Stats"
+    STORE = "Store"

@@ -11,12 +11,27 @@ class QueryManager:
         return query, values
 
     def select_many(
-        self, where: Optional[Dict[str, Any]] = None, limit: Optional[int] = None
+        self,
+        where: Optional[Dict[str, Any]] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+        ascending: bool = True,
     ) -> Tuple[str, List[Any]]:
+        """Build a SELECT query for multiple records with pagination and sorting."""
         where_clause, values = self._build_where_clause(where) if where else ("1", [])
+
         query = f"SELECT * FROM {self.table} WHERE {where_clause}"
-        if limit:
+
+        if order_by:
+            direction = "ASC" if ascending else "DESC"
+            query += f" ORDER BY {order_by} {direction}"
+
+        if limit is not None:
             query += f" LIMIT {limit}"
+            if offset is not None:
+                query += f" OFFSET {offset}"
+
         query += ";"
         return query, values
 

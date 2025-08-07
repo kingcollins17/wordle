@@ -1,7 +1,7 @@
 from typing import Optional, List, Dict, Any
 import logging
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from src.database.mysql_connection_manager import (
     MySQLConnectionManager,
     get_mysql_manager,
@@ -120,6 +120,53 @@ class UserRepository:
         except Exception as e:
             logger.error(f"Database query error for device_id {device_id}: {e}")
             raise e
+
+    async def list_users(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        ascending: bool = True,
+    ) -> List[WordleUser]:
+        """List users with pagination and sorting support.
+
+        Args:
+            filters: Dictionary of filter conditions
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+            order_by: Field to sort by
+            ascending: Sort order (True for ascending, False for descending)
+
+        Returns:
+            List of user dictionaries
+        """
+        try:
+            # Build base query
+            query = f"SELECT * FROM {self.qm.table}"
+
+            # Add WHERE clause if filters exist
+            values = []
+            if filters:
+                where_clause, where_values = self.qm._build_where_clause(filters)
+                query += f" WHERE {where_clause}"
+                values.extend(where_values)
+
+            # Add ORDER BY if specified
+            if order_by:
+                direction = "ASC" if ascending else "DESC"
+                query += f" ORDER BY {order_by} {direction}"
+
+            # Add pagination
+            query += " LIMIT %s OFFSET %s"
+            values.extend([limit, offset])
+
+            logger.debug(f"Executing list_users query: {query} with params: {values}")
+            res = await self.db.execute_query(query, values, fetch="all")
+            return [WordleUser(**i) for i in res]
+        except Exception as e:
+            logger.error(f"Error listing users: {e}")
+            raise
 
     async def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         """Get user by username with Redis caching."""
@@ -292,17 +339,6 @@ class UserRepository:
             logger.error(f"User deletion error for device_id {device_id}: {e}")
             raise
 
-    async def list_users(
-        self, filters: Optional[Dict[str, Any]] = None, limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """List users (not cached due to complexity of cache invalidation for lists)."""
-        try:
-            query, params = self.qm.select_many(where=filters, limit=limit)
-            return await self.db.execute_query(query, params, fetch="all")
-        except Exception as e:
-            logger.error(f"User list query error: {e}")
-            raise
-
     async def clear_user_cache(
         self,
         device_id: Optional[str] = None,
@@ -352,3 +388,13 @@ def get_user_repository(
 
     # Create and return a new UserRepository instance
     return UserRepository(db=mysql, redis=redis)
+
+
+async def get_current_user(
+    device_id: str,
+    repo: UserRepository = Depends(get_user_repository),
+) -> WordleUser:
+    user = await repo.get_user_by_device_id(device_id)
+    if user:
+        return WordleUser(**user)
+    raise HTTPException(status_code=404, detail="User not found")
