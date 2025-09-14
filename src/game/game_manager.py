@@ -127,8 +127,7 @@ class GameManager:
                     )
 
             # Generate session ID and select words
-            # session_id = str(uuid4())
-            session_id = "0fa16c0c-54f8-486b-9026-a57b72bf927e"
+            session_id = str(uuid4())
 
             # Create player info
             player1_info = PlayerInfo(
