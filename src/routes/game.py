@@ -14,9 +14,11 @@ from src.core.ai_service import AiService, get_ai_service
 from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.config import Config
+from src.game.game_reward_manager import GameReward, get_game_reward_manager
 from src.repositories import UserRepository, get_user_repository
 from src.database import *
 from src.game import *
+from src.repositories.user_repository import get_current_user
 
 game_router = APIRouter(prefix="/game", tags=[APITags.GAMES])
 
@@ -503,6 +505,7 @@ async def use_power_up(
             already_revealed_indices=request.already_revealed_indices,
             already_fished_letters=request.already_fished_letters,
         )
+
         response = PowerUpResult(
             type=request.power_up_type,
             fished_letter=(
@@ -534,20 +537,6 @@ async def use_power_up(
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
 
-@game_router.get("/test-ai")
-async def use_power_up(
-    word: str,
-    ai_service: AiService = Depends(get_ai_service),
-    # game_manager: Annotated[GameManager, Depends(get_game_manager)],
-):
-    try:
-        result = await ai_service.get_word_definition(word)
-        return result
-    except Exception as e:
-        logger.error(f"Error testing ai service {e}, {type(e)}")
-        raise HTTPException(status_code=500, detail=f"{e}")
-
-
 class RewardType(str, Enum):
     COINS = "coins"
     REVEAL_LETTER = "reveal_letter"
@@ -559,6 +548,35 @@ class RewardUserRequest(BaseModel):
     device_id: str = Field(..., description="User's device ID")
     reward_type: RewardType = Field(..., description="Type of reward to give")
     amount: int = Field(1, ge=1, description="Amount to increment")
+
+
+@game_router.get("/rewards/{game_id}")
+async def get_game_rewards(
+    attempts: int,
+    won: bool,
+    reward_manager: GameRewardManager = Depends(get_game_reward_manager),
+    user: WordleUser = Depends(get_current_user),
+) -> BaseResponse[GameReward]:
+    try:
+        rewards = reward_manager.generate_reward(user=user, won=won, attempts=attempts)
+        return BaseResponse(message="Got Rewards", data=rewards)
+    except Exception as e:
+        logger.error(f"Error rewarding user: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@game_router.post("/rewards/{game_id}")
+async def claim_game_rewards(
+    data: GameReward,
+    reward_manager: GameRewardManager = Depends(get_game_reward_manager),
+    user: WordleUser = Depends(get_current_user),
+) -> BaseResponse[WordleUser]:
+    try:
+        updated_user = await reward_manager.claim_reward(data)
+        return BaseResponse(message="Rewards claimed", data=updated_user)
+    except Exception as e:
+        logger.error(f"Error getting rewards: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @game_router.post("/reward-user", response_model=BaseResponse[WordleUser])

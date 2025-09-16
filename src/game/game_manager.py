@@ -413,6 +413,7 @@ class GameManager:
             raise GameError("It's not your turn to use a power-up")
         # Fetch opponent info to get their current secret word
         opponent = game_session.get_opponent(player_info.player_id)
+
         secret_word = game_session.get_current_word(opponent.player_id)
 
         # Find the power-up
@@ -440,13 +441,35 @@ class GameManager:
             result = await algorithm.ai_meaning(secret_word, self.ai_service)
 
         else:
-            raise GameError(f"Unknown power-up type: {power_up_type.value}")
+            raise GameError(f"Unknown power-up type: {power_up_type}")
 
         # Decrement power-up use
         power_up.remaining -= 1
 
         # Update and persist session
         await self._update_game_session(game_session)
+
+        # notify opponent
+        ai_txt = f"{player_info.username} has revealed the meaning of your word"
+        fish_txt = f"{player_info.username} has fished out a letter not in your word"
+        reveal_txt = f"{player_info.username} has revealed one letter from your word"
+        await self.websocket_manager.send_to_device(
+            device_id=opponent.player_id,
+            message=WebSocketMessage(
+                type=MessageType.INFO,
+                data=InfoPayload(
+                    message=(
+                        ai_txt
+                        if power_up_type == PowerUpType.AI_MEANING
+                        else (
+                            fish_txt
+                            if power_up_type == PowerUpType.FISH_OUT
+                            else reveal_txt
+                        )
+                    )
+                ),
+            ),
+        )
 
         return result
 
