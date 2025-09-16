@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class StoreItem(BaseModel):
     type: PowerUpType
+    store_product_id: str
     name: str
     price: int
     amount: int  # How many uses/power-ups come with this purchase
@@ -24,12 +25,14 @@ class StoreItem(BaseModel):
 POWERUP_STORE_ITEMS = [
     StoreItem(
         type=PowerUpType.FISH_OUT,
+        store_product_id="",
         name="Fisherman's Net",
         price=150,
         amount=3,  # Removes 3 letters
     ),
     StoreItem(
         type=PowerUpType.REVEAL_LETTER,
+        store_product_id="",
         name="X-Ray Glasses",
         price=250,
         amount=1,  # Reveals 1 letter
@@ -37,6 +40,7 @@ POWERUP_STORE_ITEMS = [
     StoreItem(
         type=PowerUpType.AI_MEANING,
         name="Word Scholar",
+        store_product_id="",
         price=400,
         amount=1,  # Provides 1 meaning
     ),

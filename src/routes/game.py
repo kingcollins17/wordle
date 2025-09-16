@@ -367,7 +367,6 @@ async def lobby_ws(
         except asyncio.TimeoutError:
             await ws_manager.disconnect(player_id, "Lobby timed out")
             return
-
         # ⛓️ Prevent race condition by locking game creation per lobby
         lobby_lock = lobby_manager.get_lock(lobby_code)
         async with lobby_lock:
@@ -533,7 +532,11 @@ async def use_power_up(
         raise HTTPException(status_code=400, detail=str(e))
 
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         logger.error(f"Unexpected error using power-up: {e}")
+
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
 
@@ -558,7 +561,9 @@ async def get_game_rewards(
     user: WordleUser = Depends(get_current_user),
 ) -> BaseResponse[GameReward]:
     try:
-        rewards = reward_manager.generate_reward(user=user, won=won, attempts=attempts)
+        rewards = await reward_manager.generate_reward(
+            user=user, won=won, attempts=attempts
+        )
         return BaseResponse(message="Got Rewards", data=rewards)
     except Exception as e:
         logger.error(f"Error rewarding user: {e}")
@@ -572,7 +577,7 @@ async def claim_game_rewards(
     user: WordleUser = Depends(get_current_user),
 ) -> BaseResponse[WordleUser]:
     try:
-        updated_user = await reward_manager.claim_reward(data)
+        updated_user = await reward_manager.claim_reward(user, data)
         return BaseResponse(message="Rewards claimed", data=updated_user)
     except Exception as e:
         logger.error(f"Error getting rewards: {e}")

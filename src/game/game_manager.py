@@ -453,23 +453,26 @@ class GameManager:
         ai_txt = f"{player_info.username} has revealed the meaning of your word"
         fish_txt = f"{player_info.username} has fished out a letter not in your word"
         reveal_txt = f"{player_info.username} has revealed one letter from your word"
-        await self.websocket_manager.send_to_device(
-            device_id=opponent.player_id,
-            message=WebSocketMessage(
-                type=MessageType.INFO,
-                data=InfoPayload(
-                    message=(
-                        ai_txt
-                        if power_up_type == PowerUpType.AI_MEANING
-                        else (
-                            fish_txt
-                            if power_up_type == PowerUpType.FISH_OUT
-                            else reveal_txt
+        try:
+            await self.websocket_manager.send_to_device(
+                device_id=opponent.player_id,
+                message=WebSocketMessage(
+                    type=MessageType.INFO,
+                    data=InfoPayload(
+                        message=(
+                            ai_txt
+                            if power_up_type == PowerUpType.AI_MEANING
+                            else (
+                                fish_txt
+                                if power_up_type == PowerUpType.FISH_OUT
+                                else reveal_txt
+                            )
                         )
-                    )
+                    ),
                 ),
-            ),
-        )
+            )
+        except:
+            logger.error("Error sending message to opponent")
 
         return result
 

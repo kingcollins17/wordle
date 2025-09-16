@@ -197,9 +197,9 @@ Return ONLY the JSON response, no additional text."""
                             error="not_in_dictionary",
                         )
 
-        except aiohttp.ClientTimeout:
-            self.logger.error("Gemini API timeout")
-            raise HTTPException(status_code=504, detail="AI service timeout")
+        # except aiohttp.ClientTimeout:
+        #     self.logger.error("Gemini API timeout")
+        #     raise HTTPException(status_code=504, detail="AI service timeout")
 
         except aiohttp.ClientError as e:
             self.logger.error(f"Gemini API connection error: {e}")
