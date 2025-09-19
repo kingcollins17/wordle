@@ -324,6 +324,17 @@ async def lobby_ws(
             await ws_manager.disconnect(player_id, "User not found")
             return
 
+        # ✅ Check if player is already in a game and end it
+        existing_game = await game_manager.get_player_game_session(player_id)
+        if existing_game:
+            opponent = existing_game.get_opponent(player_id)
+            winner_id = opponent.player_id if opponent else None
+            await game_manager.end_game(
+                existing_game.session_id,
+                winner_id=winner_id,
+                reason=f"{user.username} reconnected - previous game ended",
+            )
+
         # 🎮 Proceed to lobby
         lobby = lobby_manager.get_lobby(lobby_code)
         if not lobby:
@@ -428,6 +439,55 @@ async def lobby_ws(
     except Exception as e:
         logger.error(f"Error connecting to Lobby {e}")
         await ws_manager.disconnect(player_id, reason="Something went wrong")
+
+
+@game_router.post("/end/{game_id}", response_model=BaseResponse[bool])
+async def end_game(
+    game_id: str,
+    user: WordleUser = Depends(get_current_user),
+    game_manager: GameManager = Depends(get_game_manager),
+) -> BaseResponse[bool]:
+    try:
+        # Get the game session
+        game_session = await game_manager.get_game_session(game_id)
+        if not game_session:
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        # Ensure user is part of the game
+        if user.device_id not in game_session.players:
+            raise HTTPException(status_code=403, detail="You are not part of this game")
+
+        # Find opponent (they should be the winner)
+        opponent = game_session.get_opponent(user.device_id)
+        if not opponent:
+            raise HTTPException(status_code=404, detail="Opponent not found")
+
+        # Notify opponent before ending the game
+        try:
+            await game_manager.websocket_manager.send_to_device(
+                device_id=opponent.player_id,
+                message=WebSocketMessage(
+                    type=MessageType.INFO,
+                    data=InfoPayload(message=f"{user.username} has ended the game"),
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify opponent before ending game: {e}")
+
+        # End the game with opponent as winner
+        success = await game_manager.end_game(
+            game_id,
+            winner_id=opponent.player_id,
+            reason=f"{user.username} ended the game",
+        )
+
+        return BaseResponse(message="Game ended successfully", data=success)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error ending game: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # REST API
