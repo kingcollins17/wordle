@@ -20,7 +20,6 @@ class Environment:
         self.redis_db = int(os.getenv("REDIS_DB", 0))
         self.redis_username = os.getenv("REDIS_USERNAME", "default")
         self.redis_password = os.getenv("REDIS_PASSWORD")
-        # Construct REDIS_URL if not provided
         default_url = (
             f"redis://{self.redis_username}:{self.redis_password}"
             f"@{self.redis_host}:{self.redis_port}"
@@ -31,6 +30,38 @@ class Environment:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.gemini_api_url = os.getenv("GEMINI_API_URL")
         self.gemini_api_model = os.getenv("GEMINI_API_MODEL")
+
+        # Firebase config (from .env)
+        self.firebase_type = os.getenv("TYPE")
+        self.firebase_project_id = os.getenv("PROJECT_ID")
+        self.firebase_private_key_id = os.getenv("PRIVATE_KEY_ID")
+        # Replace \n with real newlines so Firebase SDK can parse the key
+        self.firebase_private_key = os.getenv("PRIVATE_KEY", "").replace("\\n", "\n")
+        self.firebase_client_email = os.getenv("CLIENT_EMAIL")
+        self.firebase_client_id = os.getenv("CLIENT_ID")
+        self.firebase_auth_uri = os.getenv("AUTH_URI")
+        self.firebase_token_uri = os.getenv("TOKEN_URI")
+        self.firebase_auth_provider_x509_cert_url = os.getenv(
+            "AUTH_PROVIDER_X509_CERT_URL"
+        )
+        self.firebase_client_x509_cert_url = os.getenv("CLIENT_X509_CERT_URL")
+        self.firebase_universe_domain = os.getenv("UNIVERSE_DOMAIN")
+
+    def get_firebase_config(self) -> dict:
+        """Return Firebase config as a dictionary for credentials.Certificate()."""
+        return {
+            "type": self.firebase_type,
+            "project_id": self.firebase_project_id,
+            "private_key_id": self.firebase_private_key_id,
+            "private_key": self.firebase_private_key,
+            "client_email": self.firebase_client_email,
+            "client_id": self.firebase_client_id,
+            "auth_uri": self.firebase_auth_uri,
+            "token_uri": self.firebase_token_uri,
+            "auth_provider_x509_cert_url": self.firebase_auth_provider_x509_cert_url,
+            "client_x509_cert_url": self.firebase_client_x509_cert_url,
+            "universe_domain": self.firebase_universe_domain,
+        }
 
     def __str__(self):
         return (

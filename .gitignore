@@ -18,6 +18,7 @@ _.txt
 *.env
 prod.env
 
+*serviceAccountKey.json
 # Distribution / packaging
 build/
 develop-eggs/
