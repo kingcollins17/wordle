@@ -8,6 +8,9 @@ class WordleUser(BaseModel):
     id: Optional[int] = Field(None, description="Auto-incrementing user ID")
     device_id: str = Field(..., max_length=255, description="Unique device ID")
     username: str = Field(..., max_length=255, description="Unique username")
+    device_reg_token: Optional[str] = Field(
+        default=None, description="Firebase messaging token"
+    )
     email: Optional[EmailStr] = Field(None, description="Optional email address")
     xp: int = Field(0, ge=0, description="Experience points")
     coins: int = Field(500, ge=0, description="Starting coin balance")

@@ -74,3 +74,37 @@ async def get_user_by_device_id(
         message="User fetched successfully",
         data={"user": user, "query_time_seconds": round(elapsed, 6)},
     )
+
+
+@auth_router.get("/update-reg-token/{device_id}", response_model=BaseResponse[dict])
+async def update_device_reg_token(
+    device_id: str,
+    device_reg_token: str,
+    db=Depends(get_mysql_manager),
+    redis=Depends(get_redis),
+):
+    try:
+        if not device_reg_token:
+            raise HTTPException(status_code=400, detail="device_reg_token is required")
+
+        repo = UserRepository(db, redis)
+        user = await repo.get_user_by_device_id(device_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        await repo.update_user_by_device_id(
+            device_id, {"device_reg_token": device_reg_token}
+        )
+
+        return BaseResponse(
+            success=True,
+            message="Device registration token updated successfully",
+            data={"device_id": device_id},
+        )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions (FastAPI will handle them properly)
+        raise
+    except Exception as e:
+        # Catch-all for unexpected errors
+        raise HTTPException(status_code=500, detail=str(e))
