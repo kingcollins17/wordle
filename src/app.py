@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 import logging
+from .firebase_admin_setup import *
 from src.core.api_tags import APITags
 from src.database.mysql_connection_manager import (
     _get_mysql_manager,
