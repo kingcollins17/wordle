@@ -8,7 +8,11 @@ from src.database.mysql_connection_manager import get_mysql_manager
 from src.database.redis_service import get_redis
 from src.fcm_service import FCMService, get_fcm_service
 from src.models import WordleUser
-from ..repositories.user_repository import UserRepository, get_current_user
+from ..repositories.user_repository import (
+    UserRepository,
+    get_current_user,
+    get_user_repository,
+)
 from src.core import BaseResponse, APITags
 
 auth_router = APIRouter(prefix="/users", tags=[APITags.USERS])
@@ -121,3 +125,38 @@ async def update_device_reg_token(
     except Exception as e:
         # Catch-all for unexpected errors
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@auth_router.get("/list-users", response_model=BaseResponse[list[WordleUser]])
+async def list_users(
+    q: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 50,
+    # db=Depends(get_mysql_manager),
+    # redis=Depends(get_redis),
+    repo: UserRepository = Depends(get_user_repository),
+):
+    """
+    Search for users by username using MySQL REGEXP.
+    """
+    limit = per_page
+    offset = (page - 1) * per_page
+    start_time = time.monotonic()
+    users: list[WordleUser] = []
+    if q:
+        res = await repo.search_users_by_username(q, limit, offset)
+        if res:
+            users = [WordleUser(**i) for i in res]
+    else:
+        users = await repo.list_users()
+
+    elapsed = time.monotonic() - start_time
+
+    if not users:
+        raise HTTPException(status_code=404, detail="No users matched the pattern")
+
+    return BaseResponse(
+        success=True,
+        message="Users fetched successfully",
+        data=users,
+    )

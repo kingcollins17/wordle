@@ -205,6 +205,30 @@ class UserRepository:
             logger.error(f"Database query error for username {username}: {e}")
             raise
 
+    async def search_users_by_username(
+        self,
+        pattern: str,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Search users by username using MySQL REGEXP with pagination."""
+        try:
+            # Build query manually with REGEXP + QueryManager table reference
+            query = f"SELECT * FROM {self.qm.table} WHERE username REGEXP %s LIMIT %s OFFSET %s"
+            params = [pattern, limit, offset]
+
+            logger.debug(
+                f"Executing search_users_by_username query: {query} with params: {params}"
+            )
+            res = await self.db.execute_query(query, params, fetch="all")
+
+            return res
+        except Exception as e:
+            logger.error(
+                f"Database REGEXP search error for username pattern {pattern}: {e}"
+            )
+            raise
+
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user by ID with Redis caching."""
         cache_key = self._get_cache_key("id", str(user_id))
