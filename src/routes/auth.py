@@ -1,12 +1,14 @@
+from pyexpat.errors import messages
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional
 import time
-
+from firebase_admin import messaging
 from src.database.mysql_connection_manager import get_mysql_manager
 from src.database.redis_service import get_redis
+from src.fcm_service import FCMService, get_fcm_service
 from src.models import WordleUser
-from ..repositories.user_repository import UserRepository
+from ..repositories.user_repository import UserRepository, get_current_user
 from src.core import BaseResponse, APITags
 
 auth_router = APIRouter(prefix="/users", tags=[APITags.USERS])
@@ -76,30 +78,41 @@ async def get_user_by_device_id(
     )
 
 
-@auth_router.get("/update-reg-token/{device_id}", response_model=BaseResponse[dict])
+@auth_router.get("/update-reg-token", response_model=BaseResponse[dict])
 async def update_device_reg_token(
-    device_id: str,
     device_reg_token: str,
     db=Depends(get_mysql_manager),
     redis=Depends(get_redis),
+    user: WordleUser = Depends(get_current_user),
+    fcm: FCMService = Depends(get_fcm_service),
 ):
     try:
         if not device_reg_token:
             raise HTTPException(status_code=400, detail="device_reg_token is required")
 
         repo = UserRepository(db, redis)
-        user = await repo.get_user_by_device_id(device_id)
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         await repo.update_user_by_device_id(
-            device_id, {"device_reg_token": device_reg_token}
+            user.device_id, {"device_reg_token": device_reg_token}
         )
-
+        try:
+            fcm.send_to_token(
+                device_reg_token,
+                notification=messaging.Notification(
+                    title="Test Notification", body="This is a test notification."
+                ),
+            )  # Test
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid device registration token: {e}"
+            )
         return BaseResponse(
             success=True,
             message="Device registration token updated successfully",
-            data={"device_id": device_id},
+            data={"device_id": user.device_id, "device_reg_token": device_reg_token},
         )
 
     except HTTPException:

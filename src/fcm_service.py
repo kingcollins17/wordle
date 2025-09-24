@@ -433,3 +433,14 @@ class FCMService:
             collapse_key=collapse_key,
             notification=android_notification,
         )
+
+
+_fcm_service_instance: Optional[FCMService] = None
+
+
+def get_fcm_service() -> FCMService:
+    """Get singleton FCMService instance."""
+    global _fcm_service_instance
+    if not _fcm_service_instance or "_fcm_service_instance" not in globals():
+        _fcm_service_instance = FCMService()
+    return _fcm_service_instance
