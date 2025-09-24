@@ -128,7 +128,9 @@ async def send_friend_request(
 )
 async def list_received_requests(
     user: WordleUser = Depends(get_current_user),
-    status: Optional[str] = Query(None, description="Filter by request status"),
+    status: Optional[Literal["pending", "accepted", "declined"]] = Query(
+        "pending", description="Filter by request status"
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     repo: FriendsRepository = Depends(get_friends_repository),
@@ -145,7 +147,9 @@ async def list_received_requests(
 )
 async def list_sent_requests(
     user: WordleUser = Depends(get_current_user),
-    status: Optional[Literal["pending", "accepted", "declined"]] = Query(None),
+    status: Optional[Literal["pending", "accepted", "declined"]] = Query(
+        "pending", description="Filter by request status"
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     repo: FriendsRepository = Depends(get_friends_repository),
