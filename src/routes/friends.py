@@ -27,6 +27,69 @@ friends_router = APIRouter(prefix="/friends", tags=[APITags.FRIENDS])
 
 
 # ----------------------
+# Friends
+# ----------------------
+
+
+@friends_router.get("", response_model=BaseResponse[List[FriendWithDetails]])
+async def list_friends(
+    user: WordleUser = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    repo: FriendsRepository = Depends(get_friends_repository),
+):
+    user_id = user.id
+    limit = per_page
+    offset = (page - 1) * per_page
+    print(user)
+    friends = await repo.list_friends_with_details(user_id, limit, offset)
+    return BaseResponse(message="Friends list", data=friends)
+
+
+@friends_router.delete("/remove/{friend_id}", response_model=BaseResponse[dict])
+async def remove_friend(
+    user: WordleUser = Depends(get_current_user),
+    friend_id: int = Path(..., description="Friend ID to remove"),
+    repo: FriendsRepository = Depends(get_friends_repository),
+):
+    user_id = user.id
+    removed = await repo.remove_mutual_friendship(user_id, friend_id)
+    return BaseResponse(message="Friend removed", data=removed)
+
+
+@friends_router.get("/search", response_model=BaseResponse[List[FriendWithDetails]])
+async def search_friends(
+    user: WordleUser = Depends(get_current_user),
+    q: str = Query(..., description="Search term"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    repo: FriendsRepository = Depends(get_friends_repository),
+):
+    user_id = user.id
+    limit = per_page
+    offset = (page - 1) * per_page
+    results = await repo.search_friends(user_id, q, limit, offset)
+    return BaseResponse(message="Friends search results", data=results)
+
+
+@friends_router.get(
+    "/mutual/{other_user_id}", response_model=BaseResponse[List[WordleUser]]
+)
+async def mutual_friends(
+    user: WordleUser = Depends(get_current_user),
+    other_user_id: int = Path(..., description="Other user ID"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    repo: FriendsRepository = Depends(get_friends_repository),
+):
+    user_id = user.id
+    limit = per_page
+    offset = (page - 1) * per_page
+    mutuals = await repo.get_mutual_friends(user_id, other_user_id, limit, offset)
+    return BaseResponse(message="Mutual friends", data=mutuals)
+
+
+# ----------------------
 # Friend Requests
 # ----------------------
 
@@ -135,66 +198,3 @@ async def update_request_status(
         )
 
     return BaseResponse(message=f"Request {update.status}", data=updated)
-
-
-# ----------------------
-# Friends
-# ----------------------
-
-
-@friends_router.get("/", response_model=BaseResponse[List[FriendWithDetails]])
-async def list_friends(
-    user: WordleUser = Depends(get_current_user),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    repo: FriendsRepository = Depends(get_friends_repository),
-):
-    user_id = user.id
-    limit = per_page
-    offset = (page - 1) * per_page
-    print(user)
-    friends = await repo.list_friends_with_details(user_id, limit, offset)
-    return BaseResponse(message="Friends list", data=friends)
-
-
-@friends_router.delete("/remove/{friend_id}", response_model=BaseResponse[dict])
-async def remove_friend(
-    user: WordleUser = Depends(get_current_user),
-    friend_id: int = Path(..., description="Friend ID to remove"),
-    repo: FriendsRepository = Depends(get_friends_repository),
-):
-    user_id = user.id
-    removed = await repo.remove_mutual_friendship(user_id, friend_id)
-    return BaseResponse(message="Friend removed", data=removed)
-
-
-@friends_router.get("/search", response_model=BaseResponse[List[FriendWithDetails]])
-async def search_friends(
-    user: WordleUser = Depends(get_current_user),
-    q: str = Query(..., description="Search term"),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    repo: FriendsRepository = Depends(get_friends_repository),
-):
-    user_id = user.id
-    limit = per_page
-    offset = (page - 1) * per_page
-    results = await repo.search_friends(user_id, q, limit, offset)
-    return BaseResponse(message="Friends search results", data=results)
-
-
-@friends_router.get(
-    "/mutual/{other_user_id}", response_model=BaseResponse[List[WordleUser]]
-)
-async def mutual_friends(
-    user: WordleUser = Depends(get_current_user),
-    other_user_id: int = Path(..., description="Other user ID"),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    repo: FriendsRepository = Depends(get_friends_repository),
-):
-    user_id = user.id
-    limit = per_page
-    offset = (page - 1) * per_page
-    mutuals = await repo.get_mutual_friends(user_id, other_user_id, limit, offset)
-    return BaseResponse(message="Mutual friends", data=mutuals)
