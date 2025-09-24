@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
+from typing import List, Literal, Optional
+from src.fcm_service import FCMService, get_fcm_service
+from firebase_admin import messaging
 from src.repositories.friends_repository import (
     FriendsRepository,
     get_friends_repository,
@@ -14,7 +16,11 @@ from src.models.friend_request import (
 from src.models.friends_model import Friend, FriendWithDetails
 from src.models.wordle_user import WordleUser
 from src.core import BaseResponse, APITags
-from src.repositories.user_repository import get_current_user
+from src.repositories.user_repository import (
+    UserRepository,
+    get_current_user,
+    get_user_repository,
+)
 
 
 friends_router = APIRouter(prefix="/friends", tags=[APITags.FRIENDS])
@@ -28,9 +34,29 @@ friends_router = APIRouter(prefix="/friends", tags=[APITags.FRIENDS])
 @friends_router.post("/requests", response_model=BaseResponse[FriendRequest])
 async def send_friend_request(
     request: FriendRequestCreate,
+    bg: BackgroundTasks,
+    user_repo: UserRepository = Depends(get_user_repository),
     repo: FriendsRepository = Depends(get_friends_repository),
+    user: WordleUser = Depends(get_current_user),
+    fcm: FCMService = Depends(get_fcm_service),
 ):
+    friend = await user_repo.get_user_by_id(request.receiver_id)
+    if not friend:
+        raise HTTPException(status_code=404, detail="User not found")
+    friend = WordleUser(**friend)
+    assert user.id == request.sender_id, "Sender ID must match current user ID"
+
     created_request = await repo.create_friend_request(request)
+    if created_request and friend.device_reg_token:
+        bg.add_task(
+            fcm.send_to_token,
+            token=friend.device_reg_token,
+            data={"type": "friend_request", "sender_id": user.id},
+            notification=messaging.Notification(
+                title="New Friend Request",
+                body=f"You have a new friend request from {user.username}",
+            ),
+        )
     return BaseResponse(message="Friend request sent", data=created_request)
 
 
@@ -56,7 +82,7 @@ async def list_received_requests(
 )
 async def list_sent_requests(
     user: WordleUser = Depends(get_current_user),
-    status: Optional[str] = Query(None),
+    status: Optional[Literal["pending", "accepted", "declined"]] = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     repo: FriendsRepository = Depends(get_friends_repository),
@@ -74,11 +100,40 @@ async def list_sent_requests(
 async def update_request_status(
     request_id: int,
     update: FriendRequestUpdate,
+    user_repo: UserRepository = Depends(get_user_repository),
     repo: FriendsRepository = Depends(get_friends_repository),
+    user: WordleUser = Depends(get_current_user),
+    fcm: FCMService = Depends(get_fcm_service),
 ):
+    request = await repo.get_friend_request_by_id(request_id)
+
+    if not request:
+        raise HTTPException(status_code=404, detail="Friend request not found")
+
+    sender = await user_repo.get_user_by_id(request.sender_id)
+    if not sender:
+        raise HTTPException(status_code=404, detail="Sender user not found")
+    sender = WordleUser(**sender)
+
+    if request.receiver_id != user.id:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to update this request"
+        )
     updated = await repo.update_friend_request_status(request_id, update)
     if not updated:
         raise HTTPException(status_code=404, detail="Friend request not found")
+
+    if update.status == "accepted" and sender.device_reg_token:
+
+        await fcm.send_to_token(
+            token=sender.device_reg_token,
+            data={"type": "friend_request_accepted", "receiver_id": user.id},
+            notification=messaging.Notification(
+                title="Friend Request Accepted",
+                body=f"{user.username} accepted your friend request",
+            ),
+        )
+
     return BaseResponse(message=f"Request {update.status}", data=updated)
 
 
@@ -97,14 +152,15 @@ async def list_friends(
     user_id = user.id
     limit = per_page
     offset = (page - 1) * per_page
+    print(user)
     friends = await repo.list_friends_with_details(user_id, limit, offset)
     return BaseResponse(message="Friends list", data=friends)
 
 
-@friends_router.delete("/{friend_id}", response_model=BaseResponse[dict])
+@friends_router.delete("/remove/{friend_id}", response_model=BaseResponse[dict])
 async def remove_friend(
     user: WordleUser = Depends(get_current_user),
-    friend_id: int = Query(..., description="Friend ID to remove"),
+    friend_id: int = Path(..., description="Friend ID to remove"),
     repo: FriendsRepository = Depends(get_friends_repository),
 ):
     user_id = user.id
@@ -114,12 +170,13 @@ async def remove_friend(
 
 @friends_router.get("/search", response_model=BaseResponse[List[FriendWithDetails]])
 async def search_friends(
-    user_id: int = Query(...),
+    user: WordleUser = Depends(get_current_user),
     q: str = Query(..., description="Search term"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     repo: FriendsRepository = Depends(get_friends_repository),
 ):
+    user_id = user.id
     limit = per_page
     offset = (page - 1) * per_page
     results = await repo.search_friends(user_id, q, limit, offset)
@@ -130,12 +187,13 @@ async def search_friends(
     "/mutual/{other_user_id}", response_model=BaseResponse[List[WordleUser]]
 )
 async def mutual_friends(
-    user_id: int = Query(..., description="Current user ID"),
-    other_user_id: int = Query(..., description="Other user ID"),
+    user: WordleUser = Depends(get_current_user),
+    other_user_id: int = Path(..., description="Other user ID"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     repo: FriendsRepository = Depends(get_friends_repository),
 ):
+    user_id = user.id
     limit = per_page
     offset = (page - 1) * per_page
     mutuals = await repo.get_mutual_friends(user_id, other_user_id, limit, offset)

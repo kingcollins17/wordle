@@ -92,6 +92,7 @@ app.include_router(auth_router)
 app.include_router(game_router)
 app.include_router(lb_router)
 app.include_router(store_router)
+app.include_router(friends_router)
 
 
 @app.get("/health")
@@ -172,12 +173,3 @@ async def test_redis(redis_service: RedisService = Depends(get_redis)):
     except Exception as e:
         logger.error(f"Redis test failed: {e}")
         raise HTTPException(status_code=500, detail=f"Redis test failed: {str(e)}")
-
-
-@app.post("/redis/publish")
-async def publish_message(
-    channel: str,
-    message: Dict[str, Any],
-    redis_service: RedisService = Depends(get_redis),
-):
-    from fastapi import FastAPI, HTTPException, Depends

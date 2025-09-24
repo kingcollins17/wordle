@@ -11,3 +11,4 @@ class APITags:
     ADMIN = "Admin"
     STATS = "Stats"
     STORE = "Store"
+    FRIENDS = "Friends"

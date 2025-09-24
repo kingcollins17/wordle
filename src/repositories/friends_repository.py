@@ -141,6 +141,7 @@ class FriendsRepository:
                 params.append(status)
 
             query += " ORDER BY fr.created_at DESC LIMIT %s OFFSET %s"
+            print(query)
             params.extend([limit, offset])
 
             rows = await self.db.execute_query(query, params, fetch="all")
