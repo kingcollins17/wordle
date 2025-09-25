@@ -103,12 +103,13 @@ async def update_device_reg_token(
             user.device_id, {"device_reg_token": device_reg_token}
         )
         try:
-            fcm.send_to_token(
-                device_reg_token,
-                notification=messaging.Notification(
-                    title="Test Notification", body="This is a test notification."
-                ),
-            )  # Test
+            pass
+            # fcm.send_to_token(
+            #     device_reg_token,
+            #     notification=messaging.Notification(
+            #         title="Test Notification", body="This is a test notification."
+            #     ),
+            # )  # Test
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid device registration token: {e}"

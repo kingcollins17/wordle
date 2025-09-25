@@ -1,5 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query
 from typing import List, Literal, Optional
+from aiomysql import IntegrityError
 from src.fcm_service import FCMService, get_fcm_service
 from firebase_admin import messaging
 from src.repositories.friends_repository import (
@@ -52,6 +53,7 @@ async def remove_friend(
     friend_id: int = Path(..., description="Friend ID to remove"),
     repo: FriendsRepository = Depends(get_friends_repository),
 ):
+
     user_id = user.id
     removed = await repo.remove_mutual_friendship(user_id, friend_id)
     return BaseResponse(message="Friend removed", data=removed)
@@ -103,24 +105,39 @@ async def send_friend_request(
     user: WordleUser = Depends(get_current_user),
     fcm: FCMService = Depends(get_fcm_service),
 ):
-    friend = await user_repo.get_user_by_id(request.receiver_id)
-    if not friend:
-        raise HTTPException(status_code=404, detail="User not found")
-    friend = WordleUser(**friend)
-    assert user.id == request.sender_id, "Sender ID must match current user ID"
+    try:
+        friend = await user_repo.get_user_by_id(request.receiver_id)
+        if not friend:
+            raise HTTPException(status_code=404, detail="User not found")
+        friend = WordleUser(**friend)
+        assert user.id == request.sender_id, "Sender ID must match current user ID"
 
-    created_request = await repo.create_friend_request(request)
-    if created_request and friend.device_reg_token:
-        bg.add_task(
-            fcm.send_to_token,
-            token=friend.device_reg_token,
-            data={"type": "friend_request", "sender_id": user.id},
-            notification=messaging.Notification(
-                title="New Friend Request",
-                body=f"You have a new friend request from {user.username}",
-            ),
+        created_request = await repo.create_friend_request(request)
+
+        if friend.device_reg_token:
+
+            bg.add_task(
+                fcm.send_to_token,
+                token=friend.device_reg_token,
+                data={"type": "friend_request", "app_url": "/friends"},
+                notification=messaging.Notification(
+                    title="Friend Request",
+                    body=f"{user.username} wants to be your friend",
+                ),
+            )
+
+        return BaseResponse(
+            message=f"Friend request sent to {friend.username}", data=created_request
         )
-    return BaseResponse(message="Friend request sent", data=created_request)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You may have sent a friend request to {friend.username} previously",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error sending friend request: {e}"
+        )
 
 
 @friends_router.get(
@@ -172,33 +189,42 @@ async def update_request_status(
     user: WordleUser = Depends(get_current_user),
     fcm: FCMService = Depends(get_fcm_service),
 ):
-    request = await repo.get_friend_request_by_id(request_id)
+    try:
+        request = await repo.get_friend_request_by_id(request_id)
 
-    if not request:
-        raise HTTPException(status_code=404, detail="Friend request not found")
+        if not request:
 
-    sender = await user_repo.get_user_by_id(request.sender_id)
-    if not sender:
-        raise HTTPException(status_code=404, detail="Sender user not found")
-    sender = WordleUser(**sender)
+            raise HTTPException(status_code=404, detail="Friend request not found")
 
-    if request.receiver_id != user.id:
+        sender = await user_repo.get_user_by_id(request.sender_id)
+        if not sender:
+            raise HTTPException(status_code=404, detail="Sender user not found")
+        sender = WordleUser(**sender)
+
+        assert user.id in (
+            request.sender_id,
+            request.receiver_id,
+        ), "You are not authorized"
+
+        if request.receiver_id != user.id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to update this request"
+            )
+        updated = await repo.update_friend_request_status(request_id, update)
+
+        if update.status == "accepted" and sender.device_reg_token:
+
+            fcm.send_to_token(
+                token=sender.device_reg_token,
+                data={"type": "friend_request_accepted", "receiver_id": str(user.id)},
+                notification=messaging.Notification(
+                    title="Friend Request Accepted",
+                    body=f"{user.username} accepted your friend request",
+                ),
+            )
+
+        return BaseResponse(message=f"Request {update.status}", data=updated)
+    except Exception as e:
         raise HTTPException(
-            status_code=403, detail="Not authorized to update this request"
+            status_code=500, detail=f"Error updating friend request: {e}"
         )
-    updated = await repo.update_friend_request_status(request_id, update)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Friend request not found")
-
-    if update.status == "accepted" and sender.device_reg_token:
-
-        await fcm.send_to_token(
-            token=sender.device_reg_token,
-            data={"type": "friend_request_accepted", "receiver_id": user.id},
-            notification=messaging.Notification(
-                title="Friend Request Accepted",
-                body=f"{user.username} accepted your friend request",
-            ),
-        )
-
-    return BaseResponse(message=f"Request {update.status}", data=updated)

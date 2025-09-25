@@ -12,3 +12,5 @@ class APITags:
     STATS = "Stats"
     STORE = "Store"
     FRIENDS = "Friends"
+
+    CHALLENGES = "Challenges"

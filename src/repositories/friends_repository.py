@@ -5,7 +5,6 @@ from src.database.mysql_connection_manager import (
     MySQLConnectionManager,
     get_mysql_manager,
 )
-from src.database.redis_service import RedisService, get_redis
 from src.database.query_manager import QueryManager
 from src.models.friends_model import *
 from ..models.wordle_user import WordleUser
@@ -16,9 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 class FriendsRepository:
-    def __init__(self, db: MySQLConnectionManager, redis: RedisService):
+    def __init__(self, db: MySQLConnectionManager):
         self.db = db
-        self.redis = redis
         self.friend_requests_qm = QueryManager("friend_requests")
         self.friends_qm = QueryManager("friends")
 
@@ -28,14 +26,16 @@ class FriendsRepository:
 
     async def create_friend_request(
         self, request_data: FriendRequestCreate
-    ) -> FriendRequest:
+    ) -> Optional[FriendRequest]:
         """Send a friend request"""
         try:
-            query, params = self.friend_requests_qm.insert(request_data.dict())
+            query, params = self.friend_requests_qm.insert(request_data.model_dump())
             req_id = await self.db.execute_query(query, params)
+            print(f"req_id = {req_id}")
 
             # Fetch the created request to return as model
             created_request = await self.get_friend_request_by_id(req_id)
+            print(f"created request={created_request}")
             logger.info(
                 f"Friend request created {request_data.sender_id} -> {request_data.receiver_id}"
             )
@@ -50,7 +50,9 @@ class FriendsRepository:
         """Get a friend request by ID"""
         try:
             query, params = self.friend_requests_qm.select_one({"id": request_id})
+
             row = await self.db.execute_query(query, params, fetch="one")
+
             return FriendRequest(**row) if row else None
         except Exception as e:
             logger.error(f"Error fetching friend request {request_id}: {e}")
@@ -437,8 +439,6 @@ class FriendsRepository:
             )
 
 
-def get_friends_repository(
-    mysql=Depends(get_mysql_manager), redis=Depends(get_redis)
-) -> FriendsRepository:
+def get_friends_repository(mysql=Depends(get_mysql_manager)) -> FriendsRepository:
     """Dependency injection function for FriendsRepository"""
-    return FriendsRepository(db=mysql, redis=redis)
+    return FriendsRepository(db=mysql)

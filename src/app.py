@@ -93,6 +93,7 @@ app.include_router(game_router)
 app.include_router(lb_router)
 app.include_router(store_router)
 app.include_router(friends_router)
+app.include_router(challenges_router)
 
 
 @app.get("/health")

@@ -27,7 +27,7 @@ class MySQLConnectionManager:
                 db=self.env.db_name,
                 minsize=5,  # Minimum number of connections in pool
                 maxsize=20,  # Maximum number of connections in pool
-                autocommit=False,
+                autocommit=True,
                 echo=False,
                 pool_recycle=3600,  # Recycle connections after 1 hour
                 charset="utf8mb4",
@@ -100,6 +100,8 @@ class MySQLConnectionManager:
                         result = await cursor.fetchone()
                     elif fetch == "all":
                         result = await cursor.fetchall()
+                    elif cursor.lastrowid:
+                        result = cursor.lastrowid
                     else:
                         result = cursor.rowcount
 

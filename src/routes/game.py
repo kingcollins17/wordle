@@ -154,6 +154,10 @@ async def game(
                     bot = bot_manager.active_bots.get(opponent_id)
 
                     if bot:
+                        # wait between 2 and 10 seconds
+                        wait_time = random.randint(2, 10)
+                        await asyncio.sleep(wait_time)
+
                         guess = await bot.play(game_manager)
                         await game_manager.play(
                             session_id=game.session_id,
