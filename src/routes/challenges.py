@@ -107,6 +107,32 @@ async def list_challenges(
     return BaseResponse(message="Challenges list", data=challenges)
 
 
+@challenges_router.get(
+    "/find/{challenge_id}",
+    response_model=BaseResponse[Challenge],
+)
+async def find_challenge(
+    challenge_id: int,
+    user: WordleUser = Depends(get_current_user),
+    repo: ChallengesRepository = Depends(get_challenges_repository),
+):
+    try:
+        challenge = await repo.get_challenge_by_id(challenge_id)
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+
+        if challenge.p1_id != user.id and challenge.p2_id != user.id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to view this challenge"
+            )
+
+        return BaseResponse(message="Challenge found", data=challenge)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error while finding challenge: {e}"
+        )
+
+
 @challenges_router.patch(
     "/update/{challenge_id}", response_model=BaseResponse[Challenge]
 )
