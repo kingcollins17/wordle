@@ -271,7 +271,7 @@ async def matchmaking_ws(
                 ),
             )
             # scorer = ScoringAfterGameHandler(user_repo)
-            game_manager.register_after_game_handler(game.session_id, scorer)
+            # game_manager.register_after_game_handler(game.session_id, scorer)
             game_manager.register_after_game_handler(
                 game.session_id,
                 PowerUpPersistenceAfterGameHandler(user_repo),
@@ -435,7 +435,7 @@ async def lobby_ws(
                     settings=lobby.settings,
                 )
                 # scorer = ScoringAfterGameHandler(repo)
-                game_manager.register_after_game_handler(game.session_id, scorer)
+                # game_manager.register_after_game_handler(game.session_id, scorer)
                 game_manager.register_after_game_handler(
                     game.session_id,
                     PowerUpPersistenceAfterGameHandler(repo),
