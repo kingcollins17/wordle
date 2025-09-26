@@ -74,7 +74,7 @@ async def create_challenge(
                 token=p2.device_reg_token,
                 data={
                     "type": "challenge_invite",
-                    "app_url": "/accept-challenge",
+                    "app_url": f"/challenge-details/{created.id}",
                     "challenge_id": str(created.id),
                 },
                 notification=messaging.Notification(
@@ -231,15 +231,45 @@ async def accept_challenge(
 @challenges_router.delete("/delete/{challenge_id}", response_model=BaseResponse[dict])
 async def delete_challenge(
     challenge_id: int,
+    bg: BackgroundTasks,
     user: WordleUser = Depends(get_current_user),
     repo: ChallengesRepository = Depends(get_challenges_repository),
+    user_repo: UserRepository = Depends(get_user_repository),
+    fcm: FCMService = Depends(get_fcm_service),
+    decline: bool = False,
 ):
-    challenge = await repo.get_challenge_by_id(challenge_id)
-    if not challenge:
-        raise HTTPException(status_code=404, detail="Challenge not found")
+    try:
+        challenge = await repo.get_challenge_by_id(challenge_id)
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
 
-    if challenge.p1_id != user.id and challenge.p2_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        if challenge.p1_id != user.id and challenge.p2_id != user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-    deleted = await repo.delete_challenge(challenge_id)
-    return BaseResponse(message="Challenge deleted", data={"id": challenge_id})
+        challenger = await user_repo.get_user_by_id(challenge.p1_id)
+        assert challenger, "Challenger not found"
+        challenger = WordleUser(**challenger)
+
+        # Send decline notification if requested
+        if decline and challenger.device_reg_token:
+            bg.add_task(
+                fcm.send_to_token,
+                token=challenger.device_reg_token,
+                data={
+                    "type": "challenge_decline",
+                    "app_url": "/challenge-list",
+                    "challenge_id": str(challenge.id),
+                },
+                notification=messaging.Notification(
+                    title="Challenge Declined",
+                    body=f"{user.username} has declined your challenge.",
+                ),
+            )
+
+        deleted = await repo.delete_challenge(challenge_id)
+        return BaseResponse(message="Challenge deleted", data={"id": challenge_id})
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"Error occurred while deleting challenge: {e}"
+        )
