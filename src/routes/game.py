@@ -277,10 +277,11 @@ async def matchmaking_ws(
                 PowerUpPersistenceAfterGameHandler(user_repo),
             )
             game_manager.register_after_game_handler(
+                game.session_id,
                 IncrementGamesPlayedAfterGameHandler(
                     repository=games_repo,
                     user_repository=user_repo,
-                )
+                ),
             )
 
         # If playing vs bot, set context and start bot game
@@ -347,6 +348,8 @@ async def lobby_ws(
                 existing_game.session_id,
                 winner_id=winner_id,
                 reason=f"{user.username} reconnected - previous game ended",
+                should_broadcast=True,
+                exclude_disconnect=[player_id],
             )
 
         # 🎮 Proceed to lobby
@@ -441,10 +444,11 @@ async def lobby_ws(
                     PowerUpPersistenceAfterGameHandler(repo),
                 )
                 game_manager.register_after_game_handler(
+                    game.session_id,
                     IncrementGamesPlayedAfterGameHandler(
                         repository=games_repo,
                         user_repository=user_repo,
-                    )
+                    ),
                 )
 
         await ws_manager.send_to_device(

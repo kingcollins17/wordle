@@ -481,6 +481,9 @@ class GameManager:
         session_id: str,
         winner_id: Optional[str] = None,
         reason: str = "manual",
+        # whether game outcome would be broadcasted
+        should_broadcast: bool = True,
+        exclude_disconnect: list[str] = [],
     ) -> bool:
         """End a game session"""
         if session_id not in self.active_games:
@@ -497,16 +500,23 @@ class GameManager:
         )
 
         # Notify players
-        await self.broadcast_game_update(
-            session_id,
-            MessageType.GAME_OVER,
-            data=GameOverPayload(
-                winner_id=winner_id,
-                winner=game_session.get_player_by_id(winner_id),
-                reason=reason,
-            ),
-        )
-        await self.websocket_manager.disconnect_all(list(game_session.players.keys()))
+        if should_broadcast:
+            await self.broadcast_game_update(
+                session_id,
+                MessageType.GAME_OVER,
+                data=GameOverPayload(
+                    winner_id=winner_id,
+                    winner=game_session.get_player_by_id(winner_id),
+                    reason=reason,
+                ),
+            )
+
+        players_to_disconnect = [
+            pid for pid in game_session.players.keys() if pid not in exclude_disconnect
+        ]
+        if players_to_disconnect:
+            await self.websocket_manager.disconnect_all(players_to_disconnect)
+
         # Run all after-game handlers
         handlers = self.after_game_handlers.get(session_id, [])
         for handler in handlers:
