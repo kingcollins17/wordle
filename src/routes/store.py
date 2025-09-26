@@ -29,6 +29,27 @@ product_coins = {
 }
 
 
+# --- Add below coin packs definition ---
+
+powerup_fish_out = "fish_out"
+powerup_ai_meaning = "ai_meaning"
+powerup_reveal_letter = "reveal_letter"
+
+# Single purchase options
+product_powerups = {
+    powerup_fish_out: {"price": 150, "quantity": 1},
+    powerup_ai_meaning: {"price": 200, "quantity": 1},
+    powerup_reveal_letter: {"price": 250, "quantity": 1},
+    # Packs
+    "fish_out_pack_10": {"price": 1200, "quantity": 10},
+    "ai_meaning_pack_10": {"price": 1600, "quantity": 10},
+    "reveal_letter_pack_10": {"price": 2000, "quantity": 10},
+    "fish_out_pack_25": {"price": 2800, "quantity": 25},
+    "ai_meaning_pack_25": {"price": 4000, "quantity": 25},
+    "reveal_letter_pack_25": {"price": 5000, "quantity": 25},
+}
+
+
 @store_router.post("/purchase/{product_id}", response_model=BaseResponse)
 async def purchase_item(
     product_id: Literal[
@@ -66,4 +87,94 @@ async def purchase_item(
         logger.error(f"Unexpected error during purchase: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail="An unexpected error occurred during purchase"
+        )
+
+
+class PowerupResponse(BaseModel):
+    id: str
+    price: int
+    quantity: int
+
+
+@store_router.get("/powerups", response_model=BaseResponse[List[PowerupResponse]])
+async def get_powerups_store() -> BaseResponse[List[PowerupResponse]]:
+    """
+    Returns available powerups and their prices (including packs).
+    """
+    powerups = [
+        PowerupResponse(id=pid, price=details["price"], quantity=details["quantity"])
+        for pid, details in product_powerups.items()
+    ]
+    return BaseResponse(success=True, message="Powerups retrieved", data=powerups)
+
+
+@store_router.post("/purchase-powerup/{product_id}", response_model=BaseResponse)
+async def purchase_powerup(
+    product_id: str,
+    current_user: WordleUser = Depends(get_current_user),
+    repo: UserRepository = Depends(get_user_repository),
+) -> BaseResponse[dict]:
+    """
+    Endpoint to purchase a power-up or pack.
+    Deducts coins and increments the user's chosen power-up count.
+    """
+
+    try:
+        if product_id not in product_powerups:
+            raise HTTPException(status_code=400, detail="Invalid power-up ID")
+
+        powerup = product_powerups[product_id]
+        price, quantity = powerup["price"], powerup["quantity"]
+
+        # Ensure user has enough coins
+        if current_user.coins < price:
+            raise HTTPException(status_code=400, detail="Not enough coins")
+
+        # Determine which power-up to increment
+        if product_id.startswith("fish_out"):
+            powerup_field = "fish_out"
+        elif product_id.startswith("ai_meaning"):
+            powerup_field = "ai_meaning"
+        elif product_id.startswith("reveal_letter"):
+            powerup_field = "reveal_letter"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid power-up type")
+
+        # Update user balance and power-up
+        new_coins = current_user.coins - price
+        new_powerup_count = getattr(current_user, powerup_field) + quantity
+
+        await repo.update_user_by_device_id(
+            device_id=current_user.device_id,
+            updates={
+                "coins": new_coins,
+                powerup_field: new_powerup_count,
+            },
+        )
+
+        logger.info(
+            f"User {current_user.device_id} purchased {product_id} "
+            f"(-{price} coins, +{quantity} {powerup_field})"
+        )
+
+        return BaseResponse(
+            success=True,
+            message="Power-up purchased successfully",
+            data={
+                "powerup": product_id,
+                "quantity_added": quantity,
+                "remaining_coins": new_coins,
+                "new_total": new_powerup_count,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Unexpected error during power-up purchase: {str(e)}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred during power-up purchase",
         )
