@@ -191,9 +191,7 @@ async def update_request_status(
 ):
     try:
         request = await repo.get_friend_request_by_id(request_id)
-
         if not request:
-
             raise HTTPException(status_code=404, detail="Friend request not found")
 
         sender = await user_repo.get_user_by_id(request.sender_id)
@@ -201,6 +199,7 @@ async def update_request_status(
             raise HTTPException(status_code=404, detail="Sender user not found")
         sender = WordleUser(**sender)
 
+        # Authorization check
         assert user.id in (
             request.sender_id,
             request.receiver_id,
@@ -210,20 +209,44 @@ async def update_request_status(
             raise HTTPException(
                 status_code=403, detail="Not authorized to update this request"
             )
+
         updated = await repo.update_friend_request_status(request_id, update)
 
+        # Handle accepted
         if update.status == "accepted" and sender.device_reg_token:
-
             fcm.send_to_token(
                 token=sender.device_reg_token,
-                data={"type": "friend_request_accepted", "receiver_id": str(user.id)},
+                data={
+                    "type": "friend_request_accepted",
+                    "receiver_id": str(user.id),
+                    "app_url": "/friends",
+                },
                 notification=messaging.Notification(
                     title="Friend Request Accepted",
                     body=f"{user.username} accepted your friend request",
                 ),
             )
 
+        # Handle declined
+        if update.status == "declined":
+            if sender.device_reg_token:
+                fcm.send_to_token(
+                    token=sender.device_reg_token,
+                    data={
+                        "type": "friend_request_declined",
+                        "receiver_id": str(user.id),
+                    },
+                    notification=messaging.Notification(
+                        title="Friend Request Declined",
+                        body=f"{user.username} declined your friend request",
+                    ),
+                )
+            # Delete the declined request
+            await repo.delete_friend_request(request_id)
+            return BaseResponse(message="Request declined and deleted", data=None)
+
         return BaseResponse(message=f"Request {update.status}", data=updated)
+
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error updating friend request: {e}"

@@ -58,6 +58,20 @@ class FriendsRepository:
             logger.error(f"Error fetching friend request {request_id}: {e}")
             raise
 
+    async def delete_friend_request(self, request_id: int) -> bool:
+        """Delete a friend request by ID"""
+        try:
+            query, params = self.friend_requests_qm.delete({"id": request_id})
+            affected = await self.db.execute_query(query, params)
+
+            if affected > 0:
+                logger.info(f"Friend request {request_id} deleted")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting friend request {request_id}: {e}")
+            raise
+
     async def update_friend_request_status(
         self, request_id: int, update_data: FriendRequestUpdate
     ) -> Optional[FriendRequest]:
