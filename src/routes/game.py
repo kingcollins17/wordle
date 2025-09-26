@@ -18,6 +18,7 @@ from src.game.game_reward_manager import GameReward, get_game_reward_manager
 from src.repositories import UserRepository, get_user_repository
 from src.database import *
 from src.game import *
+from src.repositories.games_repository import GamesRepository, get_games_repository
 from src.repositories.user_repository import get_current_user
 
 game_router = APIRouter(prefix="/game", tags=[APITags.GAMES])
@@ -190,9 +191,10 @@ async def matchmaking_ws(
     redis_: RedisService = Depends(get_redis),
     mysql: MySQLConnectionManager = Depends(get_mysql_manager),
     bot_manager: BotManager = Depends(get_bot_manager),
+    games_repo: GamesRepository = Depends(get_games_repository),
+    user_repo: UserRepository = Depends(get_user_repository),
 ):
     await ws_manager.connect(websocket=websocket, device_id=player_id)
-    user_repo = UserRepository(mysql, redis_)
     user_data = await user_repo.get_user_by_device_id(player_id)
 
     if not user_data:
@@ -268,11 +270,17 @@ async def matchmaking_ws(
                     turn_time_limit=Config.DEFAULT_TURN_TIME_LIMIT,
                 ),
             )
-            scorer = ScoringAfterGameHandler(user_repo)
+            # scorer = ScoringAfterGameHandler(user_repo)
             game_manager.register_after_game_handler(game.session_id, scorer)
             game_manager.register_after_game_handler(
                 game.session_id,
                 PowerUpPersistenceAfterGameHandler(user_repo),
+            )
+            game_manager.register_after_game_handler(
+                IncrementGamesPlayedAfterGameHandler(
+                    repository=games_repo,
+                    user_repository=user_repo,
+                )
             )
 
         # If playing vs bot, set context and start bot game
@@ -316,8 +324,10 @@ async def lobby_ws(
     redis_: RedisService = Depends(get_redis),
     mysql: MySQLConnectionManager = Depends(get_mysql_manager),
     game_manager: GameManager = Depends(get_game_manager),
+    games_repo: GamesRepository = Depends(get_games_repository),
+    user_repo: UserRepository = Depends(get_user_repository),
 ):
-    repo = UserRepository(mysql, redis_)
+    repo = user_repo
     user_data = await repo.get_user_by_device_id(device_id=player_id)
     user = WordleUser(**user_data) if user_data else None
 
@@ -424,11 +434,17 @@ async def lobby_ws(
                     player2_secret_words=player2_secret_words,
                     settings=lobby.settings,
                 )
-                scorer = ScoringAfterGameHandler(repo)
+                # scorer = ScoringAfterGameHandler(repo)
                 game_manager.register_after_game_handler(game.session_id, scorer)
                 game_manager.register_after_game_handler(
                     game.session_id,
                     PowerUpPersistenceAfterGameHandler(repo),
+                )
+                game_manager.register_after_game_handler(
+                    IncrementGamesPlayedAfterGameHandler(
+                        repository=games_repo,
+                        user_repository=user_repo,
+                    )
                 )
 
         await ws_manager.send_to_device(
