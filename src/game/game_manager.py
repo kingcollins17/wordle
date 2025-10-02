@@ -135,6 +135,7 @@ class GameManager:
                 username=player1_user.username,
                 role=PlayerRole.player1,
                 secret_words=player1_secret_words,
+                xp=player1_user.xp,
                 power_ups=[
                     PowerUp(
                         type=PowerUpType.REVEAL_LETTER,
@@ -156,6 +157,7 @@ class GameManager:
                 username=player2_user.username,
                 role=PlayerRole.player2,
                 secret_words=player2_secret_words,
+                xp=player2_user.xp,
                 power_ups=[
                     PowerUp(
                         type=PowerUpType.REVEAL_LETTER,

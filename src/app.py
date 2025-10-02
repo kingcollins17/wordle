@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException, Depends
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 import logging
+
+from src.core.ai_service import AiService, get_ai_service
 from .firebase_admin_setup import *
 from src.core.api_tags import APITags
 from src.database.mysql_connection_manager import (
@@ -101,6 +103,7 @@ async def health_check(
     db_manager: MySQLConnectionManager = Depends(get_mysql_manager),
     redis_service: RedisService = Depends(get_redis),
     env: Environment = Depends(get_env),
+    ai_service: AiService = Depends(get_ai_service),
 ):
     """Health check endpoint that verifies database, Redis, and environment."""
     # Check database health
@@ -121,6 +124,12 @@ async def health_check(
     if not env_valid:
         raise HTTPException(status_code=500, detail="Environment configuration invalid")
 
+    ai_service_healthy = False
+    try:
+        ai_service_healthy = await ai_service.health_check()
+    except:
+        pass
+
     return {
         "status": "healthy",
         "database": "connected",
@@ -133,6 +142,7 @@ async def health_check(
             "redis_port": env.redis_port,
             "redis_db": env.redis_db,
             "config_valid": env_valid,
+            "ai_service_healthy": ai_service_healthy,
         },
     }
 

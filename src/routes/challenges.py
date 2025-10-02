@@ -273,3 +273,55 @@ async def delete_challenge(
         raise HTTPException(
             status_code=400, detail=f"Error occurred while deleting challenge: {e}"
         )
+
+
+@challenges_router.delete("/cancel/{challenge_id}", response_model=BaseResponse[dict])
+async def cancel_challenge(
+    challenge_id: int,
+    bg: BackgroundTasks,
+    user: WordleUser = Depends(get_current_user),
+    repo: ChallengesRepository = Depends(get_challenges_repository),
+    user_repo: UserRepository = Depends(get_user_repository),
+    fcm: FCMService = Depends(get_fcm_service),
+):
+    try:
+        # Fetch challenge
+        challenge = await repo.get_challenge_by_id(challenge_id)
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+
+        # Ensure only challenger can cancel
+        if challenge.p1_id != user.id:
+            raise HTTPException(
+                status_code=403, detail="Only the challenger can cancel"
+            )
+
+        # Get opponent (p2) if available
+        if challenge.p2_id:
+            opponent = await user_repo.get_user_by_id(challenge.p2_id)
+            if opponent and opponent.get("device_reg_token"):
+                bg.add_task(
+                    fcm.send_to_token,
+                    token=opponent["device_reg_token"],
+                    data={
+                        "type": "challenge_cancelled",
+                        "app_url": "/challenge-list",
+                        "challenge_id": str(challenge.id),
+                    },
+                    notification=messaging.Notification(
+                        title="Challenge Cancelled",
+                        body=f"{user.username} has cancelled the challenge.",
+                    ),
+                )
+
+        # Delete challenge
+        await repo.delete_challenge(challenge_id)
+
+        return BaseResponse(
+            message="Challenge cancelled successfully", data={"id": challenge_id}
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"Error occurred while cancelling challenge: {e}"
+        )

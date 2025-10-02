@@ -70,7 +70,7 @@ class PlayerInfo(BaseModel):
     username: Optional[str] = None
     role: PlayerRole
     secret_words: List[str] = Field(..., min_items=1)
-
+    xp: Optional[int] = 0
     attempts: List[GuessAttempt] = Field(...)
     power_ups: List[PowerUp] = Field(default_factory=list)
     score: int = 0
