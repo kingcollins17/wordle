@@ -12,6 +12,8 @@ class WordleUser(BaseModel):
         default=None, description="Firebase messaging token"
     )
     email: Optional[EmailStr] = Field(None, description="Optional email address")
+
+    avatar: Optional[str] = Field(None, description="Optional avatar")
     xp: int = Field(0, ge=0, description="Experience points")
     coins: int = Field(500, ge=0, description="Starting coin balance")
     games_played: int = Field(0, ge=0, description="Total games played")

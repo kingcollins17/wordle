@@ -22,6 +22,7 @@ auth_router = APIRouter(prefix="/users", tags=[APITags.USERS])
 class CreateUserRequest(BaseModel):
     device_id: str = Field(..., max_length=255)
     username: Optional[str] = Field(None, max_length=255)
+    avatar: Optional[str] = None
 
 
 @auth_router.post("/", response_model=BaseResponse, status_code=status.HTTP_201_CREATED)
@@ -48,6 +49,7 @@ async def create_user(
         "device_id": request.device_id,
         "username": request.username or f"user_{request.device_id[:6]}",
         "xp": 0,
+        "avatar": request.avatar,
         "coins": 500,
         "games_played": 0,
     }
@@ -59,6 +61,35 @@ async def create_user(
         message="User created successfully",
         data={"device_id": request.device_id},
     )
+
+
+class UpdateUserRequest(BaseModel):
+    username: Optional[str] = Field(None, max_length=255)
+    avatar: Optional[str] = Field(None)
+
+
+@auth_router.put("/update-profile", response_model=BaseResponse)
+async def update_user_profile(
+    request: UpdateUserRequest,
+    user: WordleUser = Depends(get_current_user),
+    repo: UserRepository = Depends(get_user_repository),
+):
+    try:
+        updates = request.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        await repo.update_user_by_device_id(user.device_id, updates)
+
+        return BaseResponse(
+            success=True,
+            message="User profile updated successfully",
+            data={"device_id": user.device_id, "updates": updates},
+        )
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"{e}")
 
 
 @auth_router.get("/by-device/{device_id}", response_model=BaseResponse)
