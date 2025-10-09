@@ -68,6 +68,7 @@ class GuessAttempt(BaseModel):
 class PlayerInfo(BaseModel):
     player_id: str
     username: Optional[str] = None
+    avatar: Optional[str] = None
     role: PlayerRole
     secret_words: List[str] = Field(..., min_items=1)
     xp: Optional[int] = 0

@@ -319,7 +319,7 @@ async def lobby_ws(
     player_id: str = Query(...),
     secret_word: List[str] = Query(...),
     rounds: int = Query(default=1),
-    turn_time_limit: Optional[int] = Query(default=60, description="Turn time limit"),
+    turn_time_limit: Optional[int] = Query(default=120, description="Turn time limit"),
     lobby_manager: LobbyManager = Depends(lobby_manager),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
     redis_: RedisService = Depends(get_redis),

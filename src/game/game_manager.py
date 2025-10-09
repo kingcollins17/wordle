@@ -100,6 +100,7 @@ class GameManager:
 
             if len(player1_secret_words) != settings.rounds:
                 raise GameError(f"Player 1 must provide {settings.rounds} secret words")
+
             if len(player2_secret_words) != settings.rounds:
 
                 raise GameError(f"Player 2 must provide {settings.rounds} secret words")
@@ -133,6 +134,7 @@ class GameManager:
             player1_info = PlayerInfo(
                 player_id=player1_user.device_id,
                 username=player1_user.username,
+                avatar=player1_info.avatar,
                 role=PlayerRole.player1,
                 secret_words=player1_secret_words,
                 xp=player1_user.xp,
@@ -155,6 +157,7 @@ class GameManager:
             player2_info = PlayerInfo(
                 player_id=player2_user.device_id,
                 username=player2_user.username,
+                avatar=player2_user.avatar,
                 role=PlayerRole.player2,
                 secret_words=player2_secret_words,
                 xp=player2_user.xp,
