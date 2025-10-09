@@ -465,6 +465,27 @@ async def lobby_ws(
         await ws_manager.disconnect(player_id, reason="Something went wrong")
 
 
+@game_router.get("/current-session", response_model=BaseResponse[Optional[GameSession]])
+async def get_current_game_session(
+    user: WordleUser = Depends(get_current_user),
+    game_manager: GameManager = Depends(get_game_manager),
+) -> BaseResponse[Optional[GameSession]]:
+    """
+    Get the current active game session for the authenticated user.
+    Returns None if the user has no active game.
+    """
+    try:
+        game = await game_manager.get_player_game_session(user.device_id)
+        if not game:
+            return BaseResponse(message="No active game session found", data=None)
+        return BaseResponse(message="Active game session found", data=game)
+    except Exception as e:
+        logger.error(
+            f"Error fetching current game session for user {user.device_id}: {e}"
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @game_router.post("/end/{game_id}", response_model=BaseResponse[bool])
 async def end_game(
     game_id: str,
