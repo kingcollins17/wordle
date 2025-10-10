@@ -355,8 +355,6 @@ async def lobby_ws(
                 should_broadcast=True,
                 exclude_disconnect=[player_id],
             )
-        else:
-            raise Exception("Player already in a game session")
 
         # 🎮 Proceed to lobby
         lobby = lobby_manager.get_lobby(lobby_code)
