@@ -341,7 +341,11 @@ async def lobby_ws(
 
         # ✅ Check if player is already in a game and end it
         existing_game = await game_manager.get_player_game_session(player_id)
-        if existing_game:
+        # do not end games in waiting state
+        if existing_game and existing_game.game_state in [
+            GameState.in_progress,
+            GameState.game_over,
+        ]:
             opponent = existing_game.get_opponent(player_id)
             winner_id = opponent.player_id if opponent else None
             await game_manager.end_game(
@@ -351,6 +355,8 @@ async def lobby_ws(
                 should_broadcast=True,
                 exclude_disconnect=[player_id],
             )
+        else:
+            raise Exception("Player already in a game session")
 
         # 🎮 Proceed to lobby
         lobby = lobby_manager.get_lobby(lobby_code)
@@ -462,7 +468,7 @@ async def lobby_ws(
         await ws_manager.disconnect(player_id, reason="You have been matched")
     except Exception as e:
         logger.error(f"Error connecting to Lobby {e}")
-        await ws_manager.disconnect(player_id, reason="Something went wrong")
+        await ws_manager.disconnect(player_id, reason=f"Something went wrong: {e}")
 
 
 @game_router.get("/current-session", response_model=BaseResponse[Optional[GameSession]])
