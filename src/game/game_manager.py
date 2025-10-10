@@ -134,7 +134,7 @@ class GameManager:
             player1_info = PlayerInfo(
                 player_id=player1_user.device_id,
                 username=player1_user.username,
-                avatar=player1_info.avatar,
+                avatar=player1_user.avatar,
                 role=PlayerRole.player1,
                 secret_words=player1_secret_words,
                 xp=player1_user.xp,
