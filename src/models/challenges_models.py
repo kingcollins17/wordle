@@ -9,6 +9,9 @@ class ChallengeBase(BaseModel):
     p2_id: int = Field(..., description="ID of player 2")
     p1_username: str = Field(..., description="Username of player 1")
     p2_username: str = Field(..., description="Username of player 2")
+
+    p1_avatar: Optional[str] = None
+    p2_avatar: Optional[str] = None
     p1_secret_words: Optional[List[str]] = Field(
         ..., description="List of secret words for player 1"
     )

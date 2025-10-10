@@ -59,6 +59,8 @@ async def create_challenge(
                 p2_id=p2.id,
                 p1_username=user.username,
                 p2_username=p2.username,
+                p1_avatar=user.avatar,
+                p2_avatar=p2.avatar,
                 p1_secret_words=challenge.p1_secret_words,
                 p2_secret_words=None,
                 word_length=len(challenge.p1_secret_words[0]),

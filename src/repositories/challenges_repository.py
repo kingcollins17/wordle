@@ -22,6 +22,10 @@ class ChallengesRepository:
         try:
             dump = challenge_data.model_dump()
             dump["p1_secret_words"] = json.dumps(challenge_data.p1_secret_words)
+
+            if v := dump.get("p2_secret_words"):
+                dump["p2_secret_words"] = json.dumps(v)
+
             query, params = self.challenges_qm.insert(dump)
             challenge_id = await self.db.execute_query(query, params)
 
