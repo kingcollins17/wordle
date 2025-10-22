@@ -481,6 +481,69 @@ class GameManager:
 
         return result
 
+    async def increment_power_up(
+        self,
+        player_id: str,
+        power_up_type: PowerUpType,
+        amount: int = 1,
+    ):
+        """Increment a player's power-up count."""
+        game_session = await self.get_player_game_session(player_id)
+        if not game_session:
+            raise GameError("No active game session found for player")
+
+        player_info = game_session.get_player_by_id(player_id)
+        if not player_info:
+            raise GameError("Player not found in session")
+
+        power_up = next(
+            (p for p in player_info.power_ups if p.type == power_up_type), None
+        )
+        if not power_up:
+            raise GameError(f"{power_up_type.value} power-up not found for player")
+
+        power_up.remaining += amount
+        await self._update_game_session(game_session)
+
+        logger.info(
+            f"Incremented {power_up_type.value} by {amount} for player {player_id}"
+        )
+        return power_up.remaining
+
+    async def decrement_power_up(
+        self,
+        player_id: str,
+        power_up_type: PowerUpType,
+        amount: int = 1,
+    ):
+        """Decrement a player's power-up count."""
+        game_session = await self.get_player_game_session(player_id)
+        if not game_session:
+            raise GameError("No active game session found for player")
+
+        player_info = game_session.get_player_by_id(player_id)
+        if not player_info:
+            raise GameError("Player not found in session")
+
+        power_up = next(
+            (p for p in player_info.power_ups if p.type == power_up_type), None
+        )
+        if not power_up:
+            raise GameError(f"{power_up_type.value} power-up not found for player")
+
+        if power_up.remaining < amount:
+            raise GameError(
+                f"Cannot decrement {power_up_type.value}: insufficient remaining uses"
+            )
+
+        power_up.remaining -= amount
+        await self._update_game_session(game_session)
+
+        logger.info(
+            f"Decremented {power_up_type.value} by {amount} for player {player_id}"
+        )
+        return power_up.remaining
+
     async def end_game(
         self,
         session_id: str,

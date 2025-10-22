@@ -649,6 +649,64 @@ async def use_power_up(
         raise HTTPException(status_code=500, detail="Unexpected error occurred")
 
 
+class PowerUpAdjustmentRequest(BaseModel):
+    player_id: str = Field(..., description="Player's device ID")
+    power_up_type: PowerUpType = Field(..., description="Type of power-up to modify")
+    amount: int = Field(default=1, ge=1, description="Amount to increment or decrement")
+
+
+@game_router.post("/power-up/increment", response_model=BaseResponse[int])
+async def increment_power_up(
+    request: PowerUpAdjustmentRequest,
+    game_manager: Annotated[GameManager, Depends(get_game_manager)],
+):
+    """
+    Increment a player's specific power-up count.
+    """
+    try:
+        new_count = await game_manager.increment_power_up(
+            player_id=request.player_id,
+            power_up_type=request.power_up_type,
+            amount=request.amount,
+        )
+        return BaseResponse[int](
+            message=f"{request.power_up_type.value} incremented successfully",
+            data=new_count,
+        )
+    except GameError as e:
+        logger.error(f"GameError incrementing power-up: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error incrementing power-up: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@game_router.post("/power-up/decrement", response_model=BaseResponse[int])
+async def decrement_power_up(
+    request: PowerUpAdjustmentRequest,
+    game_manager: Annotated[GameManager, Depends(get_game_manager)],
+):
+    """
+    Decrement a player's specific power-up count.
+    """
+    try:
+        new_count = await game_manager.decrement_power_up(
+            player_id=request.player_id,
+            power_up_type=request.power_up_type,
+            amount=request.amount,
+        )
+        return BaseResponse[int](
+            message=f"{request.power_up_type.value} decremented successfully",
+            data=new_count,
+        )
+    except GameError as e:
+        logger.error(f"GameError decrementing power-up: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error decrementing power-up: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 class RewardType(str, Enum):
     COINS = "coins"
     REVEAL_LETTER = "reveal_letter"
