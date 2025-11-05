@@ -34,12 +34,22 @@ class ConnectionInfo(BaseModel):
         arbitrary_types_allowed = True
 
 
+class CachedMessage(BaseModel):
+    message: WebSocketMessage
+    cached_at: datetime
+
+
 class WebSocketManager:
-    def __init__(self, redis_service: RedisService):
+    def __init__(self, redis_service: RedisService, cache_duration_seconds: int = 300):
         self.redis = redis_service
         self.connections: Dict[str, ConnectionInfo] = {}  # device_id -> ConnectionInfo
+        self.message_cache: Dict[str, List[CachedMessage]] = (
+            {}
+        )  # device_id -> List[CachedMessage]
+        self.cache_duration_seconds = cache_duration_seconds
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._cache_cleanup_task: Optional[asyncio.Task] = None
 
         # Redis keys
         self.ACTIVE_CONNECTIONS_KEY = "ws:active_connections"
@@ -54,6 +64,7 @@ class WebSocketManager:
         # Start background tasks
         self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
         self._cleanup_task = asyncio.create_task(self._cleanup_stale_connections())
+        self._cache_cleanup_task = asyncio.create_task(self._cleanup_expired_cache())
 
         # Clean up any stale Redis data from previous runs
         await self._cleanup_redis_data()
@@ -69,11 +80,16 @@ class WebSocketManager:
             self._heartbeat_task.cancel()
         if self._cleanup_task:
             self._cleanup_task.cancel()
+        if self._cache_cleanup_task:
+            self._cache_cleanup_task.cancel()
 
         # Disconnect all connections
         device_ids = list(self.connections.keys())
         for device_id in device_ids:
             await self.disconnect(device_id, reason="Server shutdown")
+
+        # Clear message cache
+        self.message_cache.clear()
 
         # Clean up Redis data
         await self._cleanup_redis_data()
@@ -122,6 +138,9 @@ class WebSocketManager:
                 ),
             )
 
+            # Send all cached messages for this device
+            await self._send_cached_messages(device_id)
+
             logger.info(f"WebSocket connection established for device: {device_id}")
             return True
 
@@ -164,6 +183,9 @@ class WebSocketManager:
 
             # Update Redis
             await self._update_connection_in_redis(device_id, connection_info)
+
+            # Send all cached messages for this device
+            await self._send_cached_messages(device_id)
 
             logger.info(f"WebSocket connection refreshed for device: {device_id}")
             return True
@@ -245,13 +267,16 @@ class WebSocketManager:
         return True
 
     async def send_to_device(self, device_id: str, message: WebSocketMessage) -> bool:
-        """Send a message to a specific device"""
+        """Send a message to a specific device or cache it if disconnected"""
         can_send = await self._can_send_to_device(device_id)
         if not can_send:
             return True
+
+        # If device is not connected, cache the message
         if device_id not in list(self.connections.keys()):
-            logger.warning(f"Attempted to send message to unknown device: {device_id}")
-            return False
+            logger.info(f"Device {device_id} not connected, caching message")
+            await self._cache_message(device_id, message)
+            return True
 
         connection_info: Optional[ConnectionInfo] = self.connections.get(device_id)
         if not connection_info:
@@ -259,16 +284,20 @@ class WebSocketManager:
                 device_id, reason="connection info not found"
             )
             logger.error(f"Could not find a connection for device {device_id}")
-            return False
+            # Cache the message for when device reconnects
+            await self._cache_message(device_id, message)
+            return True
 
         websocket = connection_info.websocket
 
         if websocket.client_state == WebSocketState.DISCONNECTED:
             await self._cleanup_connection(device_id, reason="WebSocket already closed")
             logger.warning(
-                f"WebSocket for device {device_id} already closed before send"
+                f"WebSocket for device {device_id} already closed before send, caching message"
             )
-            return False
+            # Cache the message for when device reconnects
+            await self._cache_message(device_id, message)
+            return True
 
         try:
             await websocket.send_text(message.model_dump_json())
@@ -279,11 +308,107 @@ class WebSocketManager:
             await self._cleanup_connection(
                 device_id, "WebSocket disconnected during send"
             )
-            return False
+            # Cache the message for when device reconnects
+            await self._cache_message(device_id, message)
+            return True
 
         except Exception as e:
             logger.error(f"Failed to send message to device {device_id}: {e}")
-            return False
+            # Cache the message for when device reconnects
+            await self._cache_message(device_id, message)
+            return True
+
+    async def _cache_message(self, device_id: str, message: WebSocketMessage):
+        """Cache a message for a disconnected device"""
+        cached_msg = CachedMessage(message=message, cached_at=datetime.utcnow())
+
+        if device_id not in self.message_cache:
+            self.message_cache[device_id] = []
+
+        self.message_cache[device_id].append(cached_msg)
+        logger.debug(
+            f"Cached message for device {device_id}. Cache size: {len(self.message_cache[device_id])}"
+        )
+
+    async def _send_cached_messages(self, device_id: str):
+        """Send all cached messages for a device and clear the cache"""
+        if device_id not in self.message_cache:
+            return
+
+        cached_messages = self.message_cache[device_id]
+        if not cached_messages:
+            return
+
+        logger.info(
+            f"Sending {len(cached_messages)} cached messages to device {device_id}"
+        )
+
+        # Send each cached message
+        for cached_msg in cached_messages:
+            try:
+                # Use the underlying websocket directly to avoid re-caching on failure
+                connection_info = self.connections.get(device_id)
+                if (
+                    connection_info
+                    and connection_info.websocket.client_state
+                    == WebSocketState.CONNECTED
+                ):
+                    await connection_info.websocket.send_text(
+                        cached_msg.message.model_dump_json()
+                    )
+                else:
+                    logger.warning(
+                        f"Device {device_id} disconnected while sending cached messages"
+                    )
+                    break
+            except Exception as e:
+                logger.error(
+                    f"Failed to send cached message to device {device_id}: {e}"
+                )
+                break
+
+        # Clear the cache for this device
+        self.message_cache.pop(device_id, None)
+        logger.info(f"Cleared message cache for device {device_id}")
+
+    async def _cleanup_expired_cache(self):
+        """Periodically clean up expired cached messages"""
+        while True:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+
+                now = datetime.utcnow()
+                expired_devices = []
+
+                for device_id, cached_messages in self.message_cache.items():
+                    # Filter out expired messages
+                    valid_messages = [
+                        msg
+                        for msg in cached_messages
+                        if (now - msg.cached_at).total_seconds()
+                        < self.cache_duration_seconds
+                    ]
+
+                    if len(valid_messages) != len(cached_messages):
+                        removed_count = len(cached_messages) - len(valid_messages)
+                        logger.info(
+                            f"Removed {removed_count} expired messages for device {device_id}"
+                        )
+
+                    if valid_messages:
+                        self.message_cache[device_id] = valid_messages
+                    else:
+                        expired_devices.append(device_id)
+
+                # Remove devices with no valid cached messages
+                for device_id in expired_devices:
+                    self.message_cache.pop(device_id, None)
+                    logger.debug(f"Cleared empty cache for device {device_id}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in cache cleanup task: {e}")
 
     async def broadcast_to_devices(
         self,
@@ -322,6 +447,14 @@ class WebSocketManager:
     def get_connected_device_count(self) -> int:
         """Get total number of connected devices"""
         return len(self.connections)
+
+    def get_cached_message_count(self, device_id: str) -> int:
+        """Get the number of cached messages for a device"""
+        return len(self.message_cache.get(device_id, []))
+
+    def get_all_cached_devices(self) -> List[str]:
+        """Get all device IDs with cached messages"""
+        return list(self.message_cache.keys())
 
     async def _update_connection_in_redis(
         self, device_id: str, connection_info: ConnectionInfo
@@ -427,7 +560,7 @@ def _get_websocket_manager(redis_service: RedisService) -> WebSocketManager:
     """Get or create WebSocket manager singleton"""
     global _websocket_manager
     if _websocket_manager is None:
-        _websocket_manager = WebSocketManager(redis_service)
+        _websocket_manager = WebSocketManager(redis_service, cache_duration_seconds=60)
     return _websocket_manager
 
 
