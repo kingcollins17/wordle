@@ -840,7 +840,6 @@ class GameManager:
 # Global game manager instance
 _game_manager: Optional[GameManager] = None
 
-
 async def get_game_manager(
     redis: RedisService = Depends(get_redis),
     websocket_manager: WebSocketManager = Depends(get_websocket_manager),
