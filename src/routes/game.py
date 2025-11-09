@@ -661,7 +661,7 @@ async def increment_power_up(
     game_manager: Annotated[GameManager, Depends(get_game_manager)],
 ):
     """
-    Increment a player's specific power-up count.
+    Increment a player's specific power-up count in game
     """
     try:
         new_count = await game_manager.increment_power_up(
@@ -687,7 +687,7 @@ async def decrement_power_up(
     game_manager: Annotated[GameManager, Depends(get_game_manager)],
 ):
     """
-    Decrement a player's specific power-up count.
+    Decrement a player's specific power-up count in game
     """
     try:
         new_count = await game_manager.decrement_power_up(

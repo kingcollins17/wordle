@@ -92,6 +92,70 @@ async def update_user_profile(
         raise HTTPException(status_code=500, detail=f"{e}")
 
 
+class _ConsumerPowerupRequest(BaseModel):
+    fish_out: int = 0
+    reveal_letter: int = 0
+    ai_meaning: int = 0
+
+
+@auth_router.post("/consume-powerups", response_model=BaseResponse)
+async def consume_power_ups(
+    payload: _ConsumerPowerupRequest,
+    user: WordleUser = Depends(get_current_user),
+    repo: UserRepository = Depends(get_user_repository),
+):
+    """
+    Consume (decrement) powerups that were used while playing the offline game.
+    Example payload:
+    {
+        "fish_out": 1,
+        "reveal_letter": 2,
+        "ai_meaning": 0
+    }
+    """
+    try:
+        # Get user’s current powerup counts from DB
+        current_user = await repo.get_user_by_device_id(
+            user.device_id, bypass_cache=True
+        )
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Build updates dictionary
+        updates = {}
+        for field, decrement_by in payload.model_dump(exclude_none=True).items():
+            if decrement_by > 0:
+                current_value = current_user.get(field, 0)
+                if current_value <= 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"User has no remaining '{field}' powerups to consume",
+                    )
+
+                # Never go below zero
+                new_value = max(0, current_value - decrement_by)
+                updates[field] = new_value
+
+        if not updates:
+            raise HTTPException(
+                status_code=400, detail="No valid powerup consumption data"
+            )
+
+        # Persist changes in DB and invalidate cache
+        await repo.update_user_by_device_id(user.device_id, updates)
+
+        return BaseResponse(
+            success=True,
+            message="Powerups updated successfully",
+            data={"device_id": user.device_id, "new_values": updates},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
+
+
 @auth_router.get("/by-device/{device_id}", response_model=BaseResponse)
 async def get_user_by_device_id(
     device_id: str, db=Depends(get_mysql_manager), redis=Depends(get_redis)
@@ -135,12 +199,6 @@ async def update_device_reg_token(
         )
         try:
             pass
-            # fcm.send_to_token(
-            #     device_reg_token,
-            #     notification=messaging.Notification(
-            #         title="Test Notification", body="This is a test notification."
-            #     ),
-            # )  # Test
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"Invalid device registration token: {e}"
