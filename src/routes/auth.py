@@ -156,9 +156,71 @@ async def consume_power_ups(
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
 
+@auth_router.get("/add-offline-earned-xp", response_model=BaseResponse)
+async def add_offline_earned_xp(
+    score: int,
+    user: WordleUser = Depends(get_current_user),
+    repo: UserRepository = Depends(get_user_repository),
+):
+    """
+    Add XP earned from an offline game based on the given score.
+    Example request: /add-offline-earned-xp?score=350
+    """
+
+    def _calculate_earned_xp(score: int) -> int:
+        if score <= 0:
+            return 0
+
+        base_xp = 10
+
+        if score <= 100:
+            xp = base_xp + int(score * 0.5)
+        elif score <= 500:
+            xp = base_xp + int(100 * 0.5 + (score - 100) * 0.25)
+        else:
+            xp = base_xp + int(100 * 0.5 + 400 * 0.25 + (score - 500) * 0.1)
+
+        return min(xp, 1000)
+
+    try:
+        # Fetch the latest user record
+        current_user = await repo.get_user_by_device_id(
+            user.device_id, bypass_cache=True
+        )
+        if not current_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Calculate earned XP
+        earned_xp = _calculate_earned_xp(score)
+
+        # Compute new total XP (assume 'xp' field in users table)
+        current_xp = current_user.get("xp", 0)
+        new_xp = current_xp + earned_xp
+
+        # Update the user’s XP in the DB
+        await repo.update_user_by_device_id(user.device_id, {"xp": new_xp})
+
+        return BaseResponse(
+            success=True,
+            message="XP updated successfully",
+            data={
+                "device_id": user.device_id,
+                "earned_xp": earned_xp,
+                "total_xp": new_xp,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
+
+
 @auth_router.get("/by-device/{device_id}", response_model=BaseResponse)
 async def get_user_by_device_id(
-    device_id: str, db=Depends(get_mysql_manager), redis=Depends(get_redis)
+    device_id: str,
+    db=Depends(get_mysql_manager),
+    redis=Depends(get_redis),
 ):
     start_time = time.monotonic()
 
