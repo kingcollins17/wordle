@@ -39,15 +39,27 @@ class BotManager:
             "WordWarden",
         ]
 
-    def _get_words_list(self, length: int):
+    def _get_words_list(self, length: int, n: int = 20):
+        """
+        Return a list of words of the given length.
+        If n is provided, return n random words from that list.
+        """
         assert length in [3, 4, 5, 6], f"Word length of {length} is not allowed"
-        return (
-            self.threes
-            if length == 3
-            else (
-                self.fours if length == 4 else self.fives if length == 5 else self.sixes
-            )
-        )
+
+        # Select the appropriate list
+        words = {
+            3: self.threes,
+            4: self.fours,
+            5: self.fives,
+            6: self.sixes,
+        }[length]
+
+        # If n is not specified, or n >= length of list, return full list
+        if n is None or n >= len(words):
+            return words
+
+        # Return n random unique items
+        return random.sample(words, n)
 
     def create_bot(
         self,
@@ -58,6 +70,9 @@ class BotManager:
         """Create a new bot with specified difficulty"""
         bot_id = f"bot_{random.randint(10000, 99999)}"
         word_list = self._get_words_list(word_length)
+
+        # add opponents word so bot can guess it
+        word_list.append(opponents_word)
 
         if difficulty == "easy":
             strategy = RandomBotStrategy(word_list)
@@ -98,8 +113,9 @@ class BotManager:
         game_session_id: str,
         game_manager: GameManager,
         word_length: int,
+        difficulty="medium",
     ):
-        """Reconnect a bot to the game if it's not currently active"""
+        """Reconnect a bot to the game if it's not currently active."""
 
         bot = self.get_bot(bot_id)
 
@@ -117,20 +133,37 @@ class BotManager:
                 )
                 return
 
-            # Guess a strategy based on default or difficulty mapping (or store difficulty in metadata if needed)
-            strategy = SmartBotStrategy(self.fours)
-            delay_range = (2, 5)  # default for "medium"
+            # Load correct word list
+            word_list = self._get_words_list(word_length)
+
+            # Match difficulty logic used in create_bot()
+            if difficulty == "easy":
+                strategy = RandomBotStrategy(word_list)
+                delay_range = (3, 7)
+            elif difficulty == "hard":
+                strategy = SmartBotStrategy(word_list)
+                delay_range = (1, 3)
+            else:  # medium
+                strategy = SmartBotStrategy(word_list)
+                delay_range = (2, 5)
+
+            # Use stored username or fallback
+            username = player_info.username or "Bot"
+
+            # Secret word from player_info (correct field is plural in your snippet)
+            secret_word = player_info.secret_words
 
             bot = BotPlayer(
                 bot_id=bot_id,
-                username=player_info.username or "Bot",
+                username=username,
                 strategy=strategy,
-                difficulty="medium",
+                difficulty=difficulty,
                 response_delay_range=delay_range,
-                secret_word=player_info.secret_words,
+                secret_word=secret_word,
             )
             self.active_bots[bot_id] = bot
 
+        # Reassign context and restart bot logic
         bot.set_game_context(game_session_id, bot.secret_word)
         await bot.start_playing(game_manager, word_length)
 

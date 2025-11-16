@@ -1,3 +1,8 @@
+from .sixes_json import sixes_list
+from .fives_json import fives_list
+from .fours_json import fours_list
+
+
 three_letter_words = [
     "cat",
     "dog",
@@ -11,41 +16,8 @@ three_letter_words = [
     "log",
 ]
 
-four_letter_words = [
-    "tree",
-    "milk",
-    "blue",
-    "book",
-    "fish",
-    "rain",
-    "snow",
-    "gold",
-    "wind",
-    "door",
-]
+four_letter_words = [i for i in fours_list if len(i) == 4]
 
-five_letter_words = [
-    "apple",
-    "brave",
-    "chair",
-    "light",
-    "drink",
-    "grape",
-    "flame",
-    "cloud",
-    "sharp",
-    "smile",
-]
+five_letter_words = [i for i in fives_list if len(i) == 5]
 
-six_letter_words = [
-    "banana",
-    "circle",
-    "silver",
-    "planet",
-    "singer",
-    "button",
-    "hunter",
-    "rocket",
-    "forest",
-    "bridge",
-]
+six_letter_words = [i for i in sixes_list if len(i) == 6]
