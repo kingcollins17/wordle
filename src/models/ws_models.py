@@ -130,6 +130,7 @@ class HeartbeatPayload(BaseModel):
 
 
 class WebSocketMessage(BaseModel):
+    id: Optional[str] = None
     type: MessageType
     data: Union[
         InitPayload,

@@ -185,7 +185,8 @@ async def add_offline_earned_xp(
     try:
         # Fetch the latest user record
         current_user = await repo.get_user_by_device_id(
-            user.device_id, bypass_cache=True
+            user.device_id,
+            bypass_cache=True,
         )
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found")

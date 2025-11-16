@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from starlette.websockets import WebSocketState
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime, timedelta
@@ -272,6 +273,7 @@ class WebSocketManager:
         if not can_send:
             return True
 
+        message.id = str(uuid.uuid4())
         # If device is not connected, cache the message
         if device_id not in list(self.connections.keys()):
             logger.info(f"Device {device_id} not connected, caching message")
