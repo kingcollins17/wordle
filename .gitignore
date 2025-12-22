@@ -101,6 +101,9 @@ cython_debug/
 # Shell scripts
 *.sh
 
+#Migration files
+
+*migration*.sql
 # Logs
 *.log
 logs/

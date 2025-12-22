@@ -28,6 +28,10 @@ from src.core.env import (
 )
 from src.game.websocket_manager import *
 from src.game.match_making_queue import matchmaking_loop
+from src.workers.lobby_cleanup_worker import (
+    startup_lobby_cleanup_worker,
+    shutdown_lobby_cleanup_worker,
+)
 from .routes import *
 
 logger = logging.getLogger(__name__)
@@ -56,6 +60,15 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(matchmaking_loop())
 
+        # Start the lobby cleanup worker
+        mysql_manager = _get_mysql_manager()
+        await startup_lobby_cleanup_worker(
+            db_manager=mysql_manager,
+            cleanup_interval_minutes=5,  # Run every 5 minutes
+            lobby_max_age_minutes=30,  # Delete lobbies older than 30 minutes
+        )
+        logger.info("Lobby cleanup worker started")
+
     except ValueError as e:
         logger.error(f"Environment initialization failed: {e}")
         raise
@@ -67,6 +80,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     try:
+        # Stop the lobby cleanup worker first
+        await shutdown_lobby_cleanup_worker()
+        logger.info("Lobby cleanup worker stopped")
+
         await shutdown_websocket_manager()
         logger.info("WebSocketManager closed")
 
@@ -96,6 +113,7 @@ app.include_router(lb_router)
 app.include_router(store_router)
 app.include_router(friends_router)
 app.include_router(challenges_router)
+app.include_router(lobbies_router)
 
 
 @app.get("/health")

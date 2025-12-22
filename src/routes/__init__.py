@@ -4,3 +4,4 @@ from .leaderboards import lb_router
 from .store import store_router
 from .friends import friends_router
 from .challenges import challenges_router
+from .lobbies import lobbies_router

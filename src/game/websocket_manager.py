@@ -41,7 +41,7 @@ class CachedMessage(BaseModel):
 
 
 class WebSocketManager:
-    def __init__(self, redis_service: RedisService, cache_duration_seconds: int = 300):
+    def __init__(self, redis_service: RedisService, cache_duration_seconds: int = 30):
         self.redis = redis_service
         self.connections: Dict[str, ConnectionInfo] = {}  # device_id -> ConnectionInfo
         self.message_cache: Dict[str, List[CachedMessage]] = (
@@ -562,7 +562,7 @@ def _get_websocket_manager(redis_service: RedisService) -> WebSocketManager:
     """Get or create WebSocket manager singleton"""
     global _websocket_manager
     if _websocket_manager is None:
-        _websocket_manager = WebSocketManager(redis_service, cache_duration_seconds=60)
+        _websocket_manager = WebSocketManager(redis_service, cache_duration_seconds=20)
     return _websocket_manager
 
 

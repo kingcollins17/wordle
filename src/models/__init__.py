@@ -4,3 +4,4 @@ from .game_session import *
 from .friend_request import *
 from .friends_model import *
 from .challenges_models import *
+from .lobby import *
