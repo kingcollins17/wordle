@@ -8,6 +8,11 @@ class DatabaseLobby(BaseModel):
     
     id: Optional[int] = Field(None, description="Auto-incrementing lobby ID")
     code: str = Field(..., max_length=4, description="4-character lobby code")
+    session_id: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="Game session ID when game is created from lobby"
+    )
     p1_id: Optional[int] = Field(None, description="Player 1 user ID")
     p2_id: Optional[int] = Field(None, description="Player 2 user ID")
     p1_device_id: Optional[str] = Field(

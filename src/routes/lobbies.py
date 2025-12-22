@@ -215,6 +215,15 @@ async def join_lobby(
                     f"Game session {session_id} created for lobby {request.code}"
                 )
                 
+                # Update lobby with session_id
+                await lobbies_repo.update_lobby(
+                    request.code,
+                    {"session_id": session_id}
+                )
+                
+                # Refresh lobby to get updated data
+                lobby = await lobbies_repo.get_lobby_by_code(request.code)
+                
                 # Optionally delete the lobby after game creation
                 # await lobbies_repo.delete_lobby(request.code)
                 
