@@ -78,14 +78,7 @@ async def game(
             await ws_manager.disconnect(player_id, reason="Game Over")
             return
 
-        # Send current game state to the connecting player
-        await ws_manager.send_to_device(
-            player_id,
-            message=WebSocketMessage(
-                type=MessageType.GAME_STATE,
-                data=game,
-            ),
-        )
+     
 
         # 🧠 BOT AWARE: If opponent is a bot and game is waiting, start immediately
         if game.game_state == GameState.waiting:
@@ -100,11 +93,14 @@ async def game(
                     game_manager,
                     word_length=game.settings.word_length,
                 )
-                # Both player and bot automatically vote to resume (start the game)
-                await game_manager.resume_game(game_id, player_id)  # Player votes
+                # bot automatically vote to resume (start the game)
                 await game_manager.resume_game(game_id, opponent_id)  # Bot votes
                 game = await game_manager.get_game_session(game_id)
-
+        
+        # broadcast game update before listening to socket
+        # Send current game state to the connecting player
+     
+        await game_manager.broadcast_game_state(game_id)
         # Keep WebSocket connection open and listen for messages
         # Connection stays open for all game states (waiting, paused, in_progress)
         try:

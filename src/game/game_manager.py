@@ -247,11 +247,7 @@ class GameManager:
         await self._update_game_session(game_session)
 
         # Broadcast pause state to all players
-        await self.broadcast_game_update(
-            session_id,
-            MessageType.GAME_STATE,
-            game_session,
-        )
+        await self.broadcast_game_state(session_id)
         
         logger.info(f"Paused game session {session_id} by player {player_id}")
         return True
@@ -282,21 +278,15 @@ class GameManager:
         if all_ready:
             # All players have voted, game is now resumed
             # Broadcast resume state to all players
-            await self.broadcast_game_update(
-                session_id,
-                MessageType.GAME_STATE,
-                game_session,
-            )
+            # Broadcast resume state to all players
+            await self.broadcast_game_state(session_id)
             logger.info(f"Resumed game session {session_id} - all players ready")
             return True
         else:
             # Still waiting for other players to vote
             # Broadcast current state showing who has voted
-            await self.broadcast_game_update(
-                session_id,
-                MessageType.GAME_STATE,
-                game_session,
-            )
+            # Broadcast current state showing who has voted
+            await self.broadcast_game_state(session_id)
             logger.info(f"Player {player_id} voted to resume game {session_id}, waiting for others")
             return False
 
@@ -678,6 +668,18 @@ class GameManager:
             target_word
         ), f"Length of target and guess do not match {target_word} {guess}"
         return GameAlgorithm().evaluate_guess(target_word, guess)
+
+    async def broadcast_game_state(self, session_id: str):
+        """Broadcast the current game state to all players in the session"""
+        if session_id not in self.active_games:
+            return
+
+        game_session = self.active_games[session_id]
+        await self.broadcast_game_update(
+            session_id,
+            MessageType.GAME_STATE,
+            game_session,
+        )
 
     async def broadcast_game_update(
         self,
