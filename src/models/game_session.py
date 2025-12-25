@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, Field
-from typing import Any, Callable, Coroutine, List, Dict, Optional, Literal
+from typing import Any, Callable, Coroutine, List, Dict, Optional, Literal, Set
 from enum import Enum
 from uuid import UUID
 from datetime import datetime, timedelta
@@ -49,6 +49,7 @@ class PowerUpResult(BaseModel):
 class GameState(str, Enum):
     waiting = "waiting"
     in_progress = "in_progress"
+    paused = "paused"
     game_over = "game_over"
 
 
@@ -113,6 +114,7 @@ class GameSession(BaseModel):
     settings: GameSettings
     turn_timer_expires_at: Optional[datetime] = None
     outcome: Optional[GameOutcome] = None
+    resume_votes: Set[str] = Field(default_factory=set)  # Set of player_ids who voted to resume
 
     class Config:
         use_enum_values = True
@@ -192,6 +194,31 @@ class GameSession(BaseModel):
     def both_players_connected(self) -> bool:
         """Check if both players are currently connected"""
         return all(player.connected for player in self.players.values())
+
+    def request_resume(self, player_id: str) -> bool:
+        """
+        Request to resume the game. Returns True if all players have voted to resume.
+        When all players vote, the game state is changed to in_progress and votes are cleared.
+        """
+        if player_id not in self.players:
+            return False
+        
+        # Add player's vote
+        self.resume_votes.add(player_id)
+        
+        # Check if all players have voted
+        all_player_ids = set(self.players.keys())
+        if self.resume_votes == all_player_ids:
+            # All players ready, resume the game
+            self.game_state = GameState.in_progress
+            self.resume_votes.clear()
+            return True
+        
+        return False
+
+    def clear_resume_votes(self):
+        """Clear all resume votes"""
+        self.resume_votes.clear()
 
 
 class AfterGameHandler(ABC):

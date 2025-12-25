@@ -44,13 +44,19 @@ async def game(
     game_id: str,
     websocket: WebSocket,
     player_id: str = Query(...),
-    lobby_manager: LobbyManager = Depends(lobby_manager),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
     redis_: RedisService = Depends(get_redis),
     mysql: MySQLConnectionManager = Depends(get_mysql_manager),
     game_manager: GameManager = Depends(get_game_manager),
     bot_manager: BotManager = Depends(get_bot_manager),
 ):
+    """
+    Simplified game WebSocket handler.
+    - Connects the user to the WebSocket
+    - Sends the current game state
+    - Handles gameplay loop for in_progress games
+    - Users signal readiness via REST endpoints
+    """
     repo = UserRepository(mysql, redis_)
     user_data = await repo.get_user_by_device_id(device_id=player_id)
     user = WordleUser(**user_data) if user_data else None
@@ -63,118 +69,106 @@ async def game(
         game = await game_manager.get_game_session(game_id)
         if not game:
             raise GameError("Game not found")
-        assert player_id in list(game.players.keys()), "Player not in game"
+        
+        if player_id not in game.players:
+            raise GameError("Player not in game")
+
+        # Handle game over state
+        if game.game_state == GameState.game_over:
+            await ws_manager.disconnect(player_id, reason="Game Over")
+            return
+
+        # Send current game state to the connecting player
+        await ws_manager.send_to_device(
+            player_id,
+            message=WebSocketMessage(
+                type=MessageType.GAME_STATE,
+                data=game,
+            ),
+        )
+
+        # 🧠 BOT AWARE: If opponent is a bot and game is waiting, start immediately
+        if game.game_state == GameState.waiting:
+            player_ids = list(game.players.keys())
+            opponent_id = [pid for pid in player_ids if pid != player_id][0]
+
+            if opponent_id.startswith("bot_"):
+                # Bot is opponent, reconnect bot and auto-start game
+                await bot_manager.reconnect_bot(
+                    opponent_id,
+                    game_id,
+                    game_manager,
+                    word_length=game.settings.word_length,
+                )
+                # Both player and bot automatically vote to resume (start the game)
+                await game_manager.resume_game(game_id, player_id)  # Player votes
+                await game_manager.resume_game(game_id, opponent_id)  # Bot votes
+                game = await game_manager.get_game_session(game_id)
+
+        # Keep WebSocket connection open and listen for messages
+        # Connection stays open for all game states (waiting, paused, in_progress)
         try:
-            is_reconnecting = True
-
-            if game.game_state == GameState.game_over:
-                await ws_manager.disconnect(player_id, reason="Game Over")
-                return
-
-            if game.game_state == GameState.waiting:
-                is_reconnecting = False
-                lobby = lobby_manager.get_lobby(game_id)
-                if not lobby:
-                    lobby = lobby_manager.create_lobby(game_id)
-                await ws_manager.send_to_device(
-                    player_id,
-                    message=WebSocketMessage(
-                        type=MessageType.WAITING,
-                        data=WaitingPayload(
-                            waiting_for=next(
-                                game.players[k]
-                                for k in game.players.keys()
-                                if k != player_id
-                            ).username,
-                        ),
-                    ),
-                )
-                lobby.add_player(player_id, websocket)
-
-                # 🧠 BOT AWARE START
-                player_ids = list(game.players.keys())
-                opponent_id = [pid for pid in player_ids if pid != player_id][0]
-
-                if opponent_id.startswith("bot_"):
-                    # bot is second player, start immediately
-                    await bot_manager.reconnect_bot(
-                        opponent_id,
-                        game_id,
-                        game_manager,
-                        word_length=game.settings.word_length,
-                    )
-                    await game_manager.start_game(game_id)
-                    game = await game_manager.get_game_session(game_id)
-                else:
-                    try:
-                        # wait for second player to join game socket
-                        await asyncio.wait_for(
-                            lobby.ready.wait(),
-                            timeout=Config.LOBBY_TIMEOUT,
-                        )
-                        game = await game_manager.get_game_session(game_id)
-
-                        if game.game_state != GameState.in_progress:
-                            await game_manager.start_game(game_id)
-                    except asyncio.TimeoutError:
-                        await ws_manager.disconnect(
-                            player_id, "Waiting Lobby timed out"
-                        )
-                        return
-
-            if is_reconnecting:
-                await ws_manager.send_to_device(
-                    player_id,
-                    message=WebSocketMessage(
-                        type=MessageType.GAME_STATE,
-                        data=await game_manager.get_game_session(game_id),
-                    ),
-                )
-
-            # Gameplay loop
             while True:
                 game = await game_manager.get_game_session(game_id)
-                if not game or game.game_state != GameState.in_progress:
+                
+                # Disconnect if game is over or doesn't exist
+                if not game or game.game_state == GameState.game_over:
                     break
+                
+                # Wait for player input
                 data = await websocket.receive_text()
                 stripped = data.strip()
 
-                await game_manager.play(
-                    session_id=game_id,
-                    player_id=player_id,
-                    guess=stripped,
-                )
-                # Refresh connection to keep it alive
-                # refresh connection mapping incase of accidental clean up
-                await ws_manager.refresh_connection(websocket, player_id)
+                # Only process guesses if game is in progress
+                if game.game_state == GameState.in_progress:
+                    await game_manager.play(
+                        session_id=game_id,
+                        player_id=player_id,
+                        guess=stripped,
+                    )
+                    
+                    # Refresh connection to keep it alive
+                    await ws_manager.refresh_connection(websocket, player_id)
 
-                # If playing against bot, handle bot turn
-                opponent_id = next(pid for pid in game.players if pid != player_id)
+                    # If playing against bot, handle bot turn
+                    opponent_id = next(pid for pid in game.players if pid != player_id)
 
-                if opponent_id.startswith("bot_"):
-                    bot = bot_manager.active_bots.get(opponent_id)
+                    if opponent_id.startswith("bot_"):
+                        bot = bot_manager.active_bots.get(opponent_id)
 
-                    if bot:
-                        # wait between 2 and 10 seconds
-                        wait_time = random.randint(2, 10)
-                        await asyncio.sleep(wait_time)
+                        if bot:
+                            # Wait between 2 and 10 seconds
+                            wait_time = random.randint(2, 10)
+                            await asyncio.sleep(wait_time)
 
-                        guess = await bot.play(game_manager)
-                        await game_manager.play(
-                            session_id=game.session_id,
-                            player_id=opponent_id,
-                            guess=guess,
-                        )
+                            guess = await bot.play(game_manager)
+                            await game_manager.play(
+                                session_id=game.session_id,
+                                player_id=opponent_id,
+                                guess=guess,
+                            )
+                else:
+                    # Game is waiting or paused - send info message
+                    await ws_manager.send_to_device(
+                        player_id,
+                        message=WebSocketMessage(
+                            type=MessageType.INFO,
+                            data=InfoPayload(
+                                message=f"Game is {game.game_state}. Please wait for the game to start or resume."
+                            ),
+                        ),
+                    )
 
         except WebSocketDisconnect:
             pass
-        await ws_manager.disconnect(player_id, reason="Nothing to do")
+        
+        await ws_manager.disconnect(player_id, reason="Connection closed")
+        
     except GameError as er:
         logger.error(f"Error playing game: {er}")
         await ws_manager.disconnect(player_id, reason=f"{er}")
     except Exception as e:
         import traceback
-
         traceback.print_exc()
         logger.error(f"Error playing game: {e}")
         await ws_manager.disconnect(player_id, reason=f"{e}")
@@ -312,163 +306,6 @@ async def matchmaking_ws(
         await ws_manager.disconnect(player_id, reason="Internal matchmaking error")
 
 
-@game_router.websocket("/ws/lobby/{lobby_code}")
-async def lobby_ws(
-    websocket: WebSocket,
-    lobby_code: str,
-    player_id: str = Query(...),
-    secret_word: List[str] = Query(...),
-    rounds: int = Query(default=1),
-    turn_time_limit: Optional[int] = Query(default=120, description="Turn time limit"),
-    lobby_manager: LobbyManager = Depends(lobby_manager),
-    ws_manager: WebSocketManager = Depends(get_websocket_manager),
-    redis_: RedisService = Depends(get_redis),
-    mysql: MySQLConnectionManager = Depends(get_mysql_manager),
-    game_manager: GameManager = Depends(get_game_manager),
-    games_repo: GamesRepository = Depends(get_games_repository),
-    user_repo: UserRepository = Depends(get_user_repository),
-):
-    repo = user_repo
-    user_data = await repo.get_user_by_device_id(device_id=player_id)
-    user = WordleUser(**user_data) if user_data else None
-
-    await ws_manager.connect(websocket=websocket, device_id=player_id, user=user)
-
-    try:
-        if not user:
-            await ws_manager.disconnect(player_id, "User not found")
-            return
-
-        # ✅ Check if player is already in a game and end it
-        existing_game = await game_manager.get_player_game_session(player_id)
-        # do not end games in waiting state
-        if existing_game and existing_game.game_state in [
-            GameState.in_progress,
-            GameState.game_over,
-        ]:
-            opponent = existing_game.get_opponent(player_id)
-            winner_id = opponent.player_id if opponent else None
-            await game_manager.end_game(
-                existing_game.session_id,
-                winner_id=winner_id,
-                reason=f"{user.username} reconnected - previous game ended",
-                should_broadcast=True,
-                exclude_disconnect=[player_id],
-            )
-
-        # 🎮 Proceed to lobby
-        lobby = lobby_manager.get_lobby(lobby_code)
-        if not lobby:
-            lobby = lobby_manager.create_lobby(lobby_code)
-        if lobby.settings and len(secret_word) != lobby.settings.rounds:
-            await ws_manager.disconnect(
-                player_id,
-                f"You must provide {lobby.settings.rounds} {lobby.settings.word_length} letter words",
-            )
-            return
-        lobby.add_player(
-            player_id,
-            websocket,
-            secret_words=secret_word,
-        )
-        if lobby.is_host(player_id):
-            # ✅ Validate secret_word
-            if len(secret_word) != rounds:
-                await ws_manager.disconnect(
-                    player_id, f"Expected {rounds} secret words, got {len(secret_word)}"
-                )
-                return
-
-            word_lengths = [len(w) for w in secret_word]
-            if len(set(word_lengths)) != 1:
-                await ws_manager.disconnect(
-                    player_id, "All secret words must be the same length"
-                )
-                return
-
-            word_length = word_lengths[0]  # Safe since all are equal
-
-            lobby.settings = GameSettings(
-                rounds=rounds,
-                word_length=word_length,
-                turn_time_limit=turn_time_limit or Config.DEFAULT_TURN_TIME_LIMIT,
-            )
-
-        try:
-            await asyncio.wait_for(lobby.ready.wait(), timeout=Config.LOBBY_TIMEOUT)
-        except asyncio.TimeoutError:
-            await ws_manager.disconnect(player_id, "Lobby timed out")
-            return
-        # ⛓️ Prevent race condition by locking game creation per lobby
-        lobby_lock = lobby_manager.get_lock(lobby_code)
-        async with lobby_lock:
-            players = list(lobby.players.keys())
-
-            if len(lobby.secret_words) != 2:
-                raise GameError("Secret words not found")
-
-            player1 = players[0]
-            player2 = players[1]
-            player1_secret_words = lobby.secret_words[player1]
-            player2_secret_words = lobby.secret_words[player2]
-
-            assert (
-                len(player1_secret_words)
-                == len(player2_secret_words)
-                == lobby.settings.rounds
-            ), f"Players 1 and 2 must each provide {lobby.settings.rounds} {lobby.settings.word_length} letter words"
-
-            word_lengths = [len(w) for w in secret_word]
-            if len(set(word_lengths)) != 1:
-                await ws_manager.disconnect(
-                    player_id, "All secret words must be the same length"
-                )
-                return
-            assert (
-                len(secret_word[0]) == lobby.settings.word_length
-            ), f"Word must be a {lobby.settings.word_length} letter word"
-
-            game = await game_manager.get_player_game_session(player_id)
-            if not game:
-                game = await game_manager.create_game(
-                    player1_user=WordleUser(
-                        **await repo.get_user_by_device_id(player1, bypass_cache=True)
-                    ),
-                    player2_user=WordleUser(
-                        **await repo.get_user_by_device_id(player2, bypass_cache=True)
-                    ),
-                    player1_secret_words=player1_secret_words,
-                    player2_secret_words=player2_secret_words,
-                    settings=lobby.settings,
-                )
-                # scorer = ScoringAfterGameHandler(repo)
-                # game_manager.register_after_game_handler(game.session_id, scorer)
-                game_manager.register_after_game_handler(
-                    game.session_id,
-                    PowerUpPersistenceAfterGameHandler(repo),
-                )
-                game_manager.register_after_game_handler(
-                    game.session_id,
-                    IncrementGamesPlayedAfterGameHandler(
-                        repository=games_repo,
-                        user_repository=user_repo,
-                    ),
-                )
-
-        await ws_manager.send_to_device(
-            player_id,
-            message=WebSocketMessage(
-                type=MessageType.MATCHED,
-                data=game,
-            ),
-        )
-        lobby_manager.remove_lobby(lobby_code)
-        await ws_manager.disconnect(player_id, reason="You have been matched")
-    except Exception as e:
-        logger.error(f"Error connecting to Lobby {e}")
-        await ws_manager.disconnect(player_id, reason=f"Something went wrong: {e}")
-
-
 @game_router.get("/current-session", response_model=BaseResponse[Optional[GameSession]])
 async def get_current_game_session(
     user: WordleUser = Depends(get_current_user),
@@ -539,6 +376,84 @@ async def end_game(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@game_router.post("/pause/{game_id}", response_model=BaseResponse[bool])
+async def pause_game(
+    game_id: str,
+    user: WordleUser = Depends(get_current_user),
+    game_manager: GameManager = Depends(get_game_manager),
+) -> BaseResponse[bool]:
+    """
+    Pause an active game session.
+    Only games in 'in_progress' state can be paused.
+    """
+    try:
+        # Get the game session
+        game_session = await game_manager.get_game_session(game_id)
+        if not game_session:
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        # Ensure user is part of the game
+        if user.device_id not in game_session.players:
+            raise HTTPException(status_code=403, detail="You are not part of this game")
+
+        # Pause the game
+        success = await game_manager.pause_game(game_id, user.device_id)
+
+        return BaseResponse(message="Game paused successfully", data=success)
+
+    except GameError as e:
+        logger.error(f"GameError pausing game: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error pausing game: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@game_router.post("/resume/{game_id}", response_model=BaseResponse[bool])
+async def resume_game(
+    game_id: str,
+    user: WordleUser = Depends(get_current_user),
+    game_manager: GameManager = Depends(get_game_manager),
+) -> BaseResponse[bool]:
+    """
+    Request to resume a paused game session.
+    Uses a voting system - all players must vote to resume before the game continues.
+    Returns True if the game was resumed (all players voted), False if still waiting for votes.
+    """
+    try:
+        # Get the game session
+        game_session = await game_manager.get_game_session(game_id)
+        if not game_session:
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        # Ensure user is part of the game
+        if user.device_id not in game_session.players:
+            raise HTTPException(status_code=403, detail="You are not part of this game")
+
+        # Request to resume the game
+        resumed = await game_manager.resume_game(game_id, user.device_id)
+
+        if resumed:
+            return BaseResponse(
+                message="Game resumed successfully - all players ready", data=True
+            )
+        else:
+            return BaseResponse(
+                message="Resume vote registered - waiting for other players", data=False
+            )
+
+    except GameError as e:
+        logger.error(f"GameError resuming game: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resuming game: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # REST API
 class LobbyInfo(BaseModel):
     lobby_code: str
@@ -549,27 +464,6 @@ class LobbyInfo(BaseModel):
     has_settings: bool
     settings: Optional[dict] = None
 
-
-@game_router.get("/lobby/{lobby_code}", response_model=BaseResponse[LobbyInfo])
-async def get_lobby_info(
-    lobby_code: str,
-    lobby_manager: LobbyManager = Depends(lobby_manager),
-):
-    lobby = lobby_manager.get_lobby(lobby_code)
-    if not lobby:
-        raise HTTPException(status_code=404, detail="Lobby not found")
-
-    info = LobbyInfo(
-        lobby_code=lobby_code,
-        host_id=lobby.host_id,
-        player_ids=list(lobby.players.keys()),
-        num_players=len(lobby.players),
-        is_full=lobby.ready.is_set(),
-        has_settings=lobby.settings is not None,
-        settings=lobby.settings.dict() if lobby.settings else None,
-    )
-
-    return BaseResponse[LobbyInfo](data=info)
 
 
 class LobbyCodeResponse(BaseModel):

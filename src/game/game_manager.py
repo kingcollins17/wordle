@@ -128,7 +128,8 @@ class GameManager:
                     )
 
             # Generate session ID and select words
-            session_id = str(uuid4())
+            # session_id = str(uuid4())
+            session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
 
             # Create player info
             player1_info = PlayerInfo(
@@ -215,33 +216,6 @@ class GameManager:
             )
             return game_session
 
-    async def start_game(self, session_id: str) -> bool:
-        """Start a game session"""
-        if session_id not in self.active_games:
-            raise GameError(f"Game session {session_id} not found")
-
-        game_session = self.active_games[session_id]
-
-        if game_session.game_state != GameState.waiting:
-            raise GameError(f"Game {session_id} is not in waiting state")
-
-        # Update game state
-        game_session.game_state = GameState.in_progress
-        game_session.turn_timer_expires_at = datetime.now() + timedelta(
-            seconds=game_session.settings.turn_time_limit
-        )
-        # Save to Redis
-        await self._update_game_session(game_session)
-
-        # Notify players
-        await self.broadcast_game_update(
-            session_id,
-            MessageType.INIT,
-            game_session,
-        )
-        logger.info(f"Started game session {session_id}")
-        return True
-
     def register_after_game_handler(
         self,
         session_id: str,
@@ -250,6 +224,82 @@ class GameManager:
         if session_id not in self.after_game_handlers:
             self.after_game_handlers[session_id] = []
         self.after_game_handlers[session_id].append(handler)
+
+    async def pause_game(self, session_id: str, player_id: str) -> bool:
+        """Pause a game session"""
+        if session_id not in self.active_games:
+            raise GameError(f"Game session {session_id} not found")
+
+        game_session = self.active_games[session_id]
+
+        # Verify player is in the game
+        if player_id not in game_session.players:
+            raise GameError(f"Player {player_id} is not in this game")
+
+        if game_session.game_state != GameState.in_progress:
+            raise GameError(f"Game {session_id} is not in progress")
+
+        # Update game state to paused
+        game_session.game_state = GameState.paused
+        game_session.clear_resume_votes()  # Clear any existing resume votes
+        
+        # Save to Redis
+        await self._update_game_session(game_session)
+
+        # Broadcast pause state to all players
+        await self.broadcast_game_update(
+            session_id,
+            MessageType.GAME_STATE,
+            game_session,
+        )
+        
+        logger.info(f"Paused game session {session_id} by player {player_id}")
+        return True
+
+    async def resume_game(self, session_id: str, player_id: str) -> bool:
+        """
+        Request to resume a paused game. Uses voting system - when all players vote, game resumes.
+        Returns True if the game was resumed (all players voted), False if still waiting for votes.
+        """
+        if session_id not in self.active_games:
+            raise GameError(f"Game session {session_id} not found")
+
+        game_session = self.active_games[session_id]
+
+        # Verify player is in the game
+        if player_id not in game_session.players:
+            raise GameError(f"Player {player_id} is not in this game")
+
+        if game_session.game_state not in (GameState.paused, GameState.waiting):
+            raise GameError(f"Game {session_id} is not paused")
+
+        # Request resume - this will automatically change state if all players voted
+        all_ready = game_session.request_resume(player_id)
+        
+        # Save to Redis
+        await self._update_game_session(game_session)
+
+        if all_ready:
+            # All players have voted, game is now resumed
+            # Broadcast resume state to all players
+            await self.broadcast_game_update(
+                session_id,
+                MessageType.GAME_STATE,
+                game_session,
+            )
+            logger.info(f"Resumed game session {session_id} - all players ready")
+            return True
+        else:
+            # Still waiting for other players to vote
+            # Broadcast current state showing who has voted
+            await self.broadcast_game_update(
+                session_id,
+                MessageType.GAME_STATE,
+                game_session,
+            )
+            logger.info(f"Player {player_id} voted to resume game {session_id}, waiting for others")
+            return False
+
 
     async def _update_game_session(self, session: GameSession):
         """Safely update the game session state in memory and Redis using a lock"""
