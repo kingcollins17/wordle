@@ -79,6 +79,16 @@ async def join_lobby(
             raise HTTPException(status_code=404, detail="User not found")
         
         user = WordleUser(**user_data)
+
+        # Check if user is already in a game and end it if so
+        active_session = await game_manager.get_player_game_session(user.device_id)
+        if active_session:
+            logger.info(f"User {user.username} is already in game {active_session.session_id}. Ending previous game.")
+            await game_manager.end_game(
+                session_id=active_session.session_id,
+                reason="Player joined a new lobby",
+                should_broadcast=True
+            )
         
         # Validate words list
         if not request.words:
