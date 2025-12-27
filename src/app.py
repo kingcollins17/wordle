@@ -114,6 +114,8 @@ app.include_router(store_router)
 app.include_router(friends_router)
 app.include_router(challenges_router)
 app.include_router(lobbies_router)
+app.include_router(words_router)
+
 
 
 @app.get("/health")
