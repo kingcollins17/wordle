@@ -427,6 +427,8 @@ class GameManager:
                         result=attempt,
                     ),
                 )
+                # Wait for a brief moment before starting the next round
+                await asyncio.sleep(2)
                 #broadcast the game update to all players to propagate paused state
                 await self.broadcast_game_state(session_id)
 
