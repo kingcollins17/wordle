@@ -126,6 +126,7 @@ class GameSession(BaseModel):
     def next_round(self) -> bool:
         if self.current_round < self.settings.rounds:
             self.current_round += 1
+            self.game_state=GameState.paused
             return True
         return False
 

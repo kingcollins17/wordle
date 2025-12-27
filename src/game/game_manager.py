@@ -128,8 +128,8 @@ class GameManager:
                     )
 
             # Generate session ID and select words
-            # session_id = str(uuid4())
-            session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
+            session_id = str(uuid4())
+            # session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
 
             # Create player info
             player1_info = PlayerInfo(
@@ -427,6 +427,8 @@ class GameManager:
                         result=attempt,
                     ),
                 )
+                #broadcast the game update to all players to propagate paused state
+                await self.broadcast_game_state(session_id)
 
         else:
             game_session.next_turn()
