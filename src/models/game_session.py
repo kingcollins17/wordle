@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import Any, Callable, Coroutine, List, Dict, Optional, Literal, Set
 from enum import Enum
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.core.ai_service import WordDefinitionResponse
 from src.game.game_algorithm import (
@@ -63,7 +63,7 @@ class GuessAttempt(BaseModel):
     player_id: str
     result: Optional[GuessResult] = None
     guess: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PlayerInfo(BaseModel):
@@ -99,15 +99,16 @@ class GameOutcome(BaseModel):
     reason: Optional[str] = (
         None  # e.g., "opponent disconnected", "max attempts", "time out"
     )
-    completed_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class GameSession(BaseModel):
     session_id: str = Field(
         ..., description="A UUID4 string that uniquely identifies the game session"
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    players: Dict[str, PlayerInfo]  # keyed by user_id
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    player1: PlayerInfo
+    player2: PlayerInfo
     current_turn: PlayerRole  # user_id
     current_round: int = Field(default=1)
     game_state: GameState = Field(default=GameState.waiting)
@@ -115,9 +116,16 @@ class GameSession(BaseModel):
     turn_timer_expires_at: Optional[datetime] = None
     outcome: Optional[GameOutcome] = None
     resume_votes: Set[str] = Field(default_factory=set)  # Set of player_ids who voted to resume
+    round_winners: List[Optional[str]] = Field(default_factory=list, description="List of player IDs who won each round")
+    info: Optional[str] = Field(None, description="Latest information about the game state")
 
     class Config:
         use_enum_values = True
+
+    @property
+    def players(self) -> Dict[str, PlayerInfo]:
+        """Backwards compatibility for players dict"""
+        return {self.player1.player_id: self.player1, self.player2.player_id: self.player2}
 
     def is_last_round(self) -> bool:
         """Is this is the last round"""
@@ -129,8 +137,8 @@ class GameSession(BaseModel):
             self.game_state = GameState.paused
             self.clear_resume_votes()
             # Clear all players previous attempts
-            for player in self.players.values():
-                player.attempts = []
+            self.player1.attempts = []
+            self.player2.attempts = []
             return True
         return False
 
@@ -148,27 +156,23 @@ class GameSession(BaseModel):
 
     def get_player_by_role(self, role: PlayerRole) -> Optional[PlayerInfo]:
         """Get player info by their role (player1 or player2)"""
-        for player in self.players.values():
-            if player.role == role:
-                return player
+        if self.player1.role == role:
+            return self.player1
+        if self.player2.role == role:
+            return self.player2
         return None
 
     def get_opponent(self, player_id: str) -> Optional[PlayerInfo]:
         """Get the opponent's PlayerInfo for a given player_id"""
-        current_player = self.players.get(player_id)
-        if not current_player:
-            return None
-
-        opponent_role = (
-            PlayerRole.player2
-            if current_player.role == PlayerRole.player1
-            else PlayerRole.player1
-        )
-        return self.get_player_by_role(opponent_role)
+        if self.player1.player_id == player_id:
+            return self.player2
+        if self.player2.player_id == player_id:
+            return self.player1
+        return None
 
     def get_current_word(self, player_id: str) -> Optional[str]:
         """Get the current round's secret word for a player"""
-        player = self.players.get(player_id)
+        player = self.get_player_by_id(player_id)
         if not player or not player.secret_words:
             return None
         # Assuming each round uses the corresponding word in the list
@@ -178,14 +182,14 @@ class GameSession(BaseModel):
 
     def is_player_turn(self, player_id: str) -> bool:
         """Check if it's currently the given player's turn"""
-        player = self.players.get(player_id)
+        player = self.get_player_by_id(player_id)
         if not player:
             return False
         return player.role == self.current_turn
 
     def get_player_attempts(self, player_id: str) -> List[GuessAttempt]:
         """Get all guess attempts for a player"""
-        player = self.players.get(player_id)
+        player = self.get_player_by_id(player_id)
         return player.attempts if player else []
 
     def get_current_player(self) -> Optional[PlayerInfo]:
@@ -194,26 +198,29 @@ class GameSession(BaseModel):
 
     def get_player_by_id(self, player_id: str) -> Optional[PlayerInfo]:
         """Get PlayerInfo by player_id"""
-        return self.players.get(player_id)
+        if self.player1.player_id == player_id:
+            return self.player1
+        if self.player2.player_id == player_id:
+            return self.player2
+        return None
 
     def both_players_connected(self) -> bool:
         """Check if both players are currently connected"""
-        return all(player.connected for player in self.players.values())
+        return self.player1.connected and self.player2.connected
 
     def request_resume(self, player_id: str) -> bool:
         """
         Request to resume the game. Returns True if all players have voted to resume.
         When all players vote, the game state is changed to in_progress and votes are cleared.
         """
-        if player_id not in self.players:
+        if player_id not in [self.player1.player_id, self.player2.player_id]:
             return False
         
         # Add player's vote
         self.resume_votes.add(player_id)
         
         # Check if all players have voted
-        all_player_ids = set(self.players.keys())
-        if self.resume_votes == all_player_ids:
+        if self.resume_votes == {self.player1.player_id, self.player2.player_id}:
             # All players ready, resume the game
             self.game_state = GameState.in_progress
             self.resume_votes.clear()

@@ -4,6 +4,7 @@ import random
 import string
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from datetime import datetime, timedelta
+from collections import Counter
 from uuid import uuid4
 
 from fastapi import Depends
@@ -128,8 +129,8 @@ class GameManager:
                     )
 
             # Generate session ID and select words
-            session_id = str(uuid4())
-            # session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
+            # session_id = str(uuid4())
+            session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
 
             # Create player info
             player1_info = PlayerInfo(
@@ -189,10 +190,8 @@ class GameManager:
             # Create game session
             game_session = GameSession(
                 session_id=session_id,
-                players={
-                    player1_user.device_id: player1_info,
-                    player2_user.device_id: player2_info,
-                },
+                player1=player1_info,
+                player2=player2_info,
                 game_state=GameState.waiting,
                 current_turn=current_turn,
                 settings=settings,
@@ -347,10 +346,13 @@ class GameManager:
             return
 
         if game_session.current_turn != player_info.role:
+            game_session.info = "Not your turn"
+           
+            
             await self.websocket_manager.send_to_device(
                 device_id=player_id,
                 message=WebSocketMessage(
-                    type=MessageType.INFO, data=InfoPayload(message="Not your turn")
+                    type=MessageType.INFO, data=InfoPayload(message="Not your turn yet")
                 ),
             )
             return
@@ -385,62 +387,43 @@ class GameManager:
         player_info.attempts.append(attempt)
 
         if result.is_correct():
+            # Correct guess handling
             player_info.score += 1
+            game_session.round_winners.append(player_id)
+            game_session.info = f"Player {player_info.username} won the round!"
+
             if game_session.is_last_round():
                 winner = (
                     player_info
                     if player_info.score > opponent_info.score
                     else opponent_info
                 )
-                await self.broadcast_game_update(
-                    session_id,
-                    MessageType.GUESS,
-                    data=GuessPayload(
-                        attempt_result=attempt,
-                        current_turn=game_session.current_turn,
-                    ),
-                )
+                game_session.info = f"Game Over! {winner.username} won!"
+                await self._update_game_session(game_session)
+                
+                
                 await self.end_game(
                     session_id,
                     winner_id=winner.player_id,
                     reason=f"Player {winner.username} won",
                 )
             else:
-
                 game_session.next_turn()
                 game_session.next_round()
                 await self._update_game_session(game_session)
+                
                 await self.broadcast_game_update(
-                    session_id,
-                    MessageType.GUESS,
-                    data=GuessPayload(
-                        attempt_result=attempt,
-                        current_turn=game_session.current_turn,
-                    ),
+                    MessageType.ROUND_RESULT,
+                    game_session,
                 )
-                await self.broadcast_game_update(
-                    session_id,
-                    MessageType.RESULT,
-                    data=ResultPayload(
-                        round_winner=player_id,
-                        guess=guess,
-                        result=attempt,
-                    ),
-                )
-                await asyncio.sleep(2)
-                await self.broadcast_game_update(game_session.session_id, MessageType.GAME_STATE, data=game_session)
-                # Wait for a brief moment before starting the next round
         else:
+            game_session.info = f"Player {player_info.username} guessed {guess}"
             game_session.next_turn()
             await self._update_game_session(game_session)
 
             await self.broadcast_game_update(
-                session_id,
                 MessageType.GUESS,
-                data=GuessPayload(
-                    attempt_result=attempt,
-                    current_turn=game_session.current_turn,
-                ),
+                game_session,
             )
 
     async def use_power_up(
@@ -601,24 +584,37 @@ class GameManager:
 
         game_session = self.active_games[session_id]
 
+        # Determine winner based on round_winners if not provided
+        if winner_id is None and game_session.round_winners:
+            # Filter out None values just in case
+            valid_winners = [w for w in game_session.round_winners if w]
+            if valid_winners:
+                counts = Counter(valid_winners)
+                most_common = counts.most_common()
+                
+                # Check for draw
+                if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
+                    winner_id = None
+                    if reason == "manual": # Only update reason if not specific
+                         reason = "Draw"
+                else:
+                    winner_id = most_common[0][0]
+            else:
+                 winner_id = None # No valid winners
+
         # Update game state
         game_session.game_state = GameState.game_over
         game_session.outcome = GameOutcome(
             winner_id=winner_id,
             reason=reason,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(timezone.utc),
         )
-
+        await self._update_game_session(game_session)
         # Notify players
         if should_broadcast:
             await self.broadcast_game_update(
-                session_id,
                 MessageType.GAME_OVER,
-                data=GameOverPayload(
-                    winner_id=winner_id,
-                    winner=game_session.get_player_by_id(winner_id),
-                    reason=reason,
-                ),
+                game_session,
             )
 
         players_to_disconnect = [
@@ -678,22 +674,20 @@ class GameManager:
 
         game_session = self.active_games[session_id]
         await self.broadcast_game_update(
-            session_id,
             MessageType.GAME_STATE,
             game_session,
         )
 
     async def broadcast_game_update(
         self,
-        session_id: str,
         message_type: MessageType,
-        data: Optional[Union[Dict, Any]] = None,
+        data: GameSession,
     ):
         """Broadcast game update to all players in the session"""
-        if session_id not in self.active_games:
+        if data.session_id not in self.active_games:
             return
         message = WebSocketMessage(type=message_type, data=data)
-        game_session = self.active_games[session_id]
+        game_session = self.active_games[data.session_id]
         devices = list(game_session.players.keys())
         # Broadcast to all devices in the game
         await self.websocket_manager.broadcast_to_devices(devices, message)
@@ -870,12 +864,8 @@ class GameManager:
 
                         # Broadcast the turn change
                         await self.broadcast_game_update(
-                            session_id,
                             MessageType.TURN,
-                            data=TurnPayload(
-                                game_session.get_current_player().player_id,
-                                turn=game_session.current_turn,
-                            ),
+                            game_session,
                         )
                         logger.info(
                             f"Turn switched in AI game {session_id} due to timeout"

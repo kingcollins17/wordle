@@ -8,7 +8,7 @@ class MessageType(str, Enum):
     # Core game
     INIT = "init"
     WAITING = "waiting"
-    RESULT = "result"  # send result when a round is complete, but if game is over, send game over
+    ROUND_RESULT = "round_result"  # send result when a round is complete, but if game is over, send game over
     GUESS = "guess"
     TURN = "turn"
     CONFIGURE = "configure"
@@ -150,38 +150,3 @@ class WebSocketMessage(BaseModel):
     ]
 
     model_config = {"use_enum_values": True}
-
-    # @model_validator(mode="after")
-    # def validate_data_type(self):
-    #     if self.type in (
-    #         MessageType.CONNECTED,
-    #         MessageType.DISCONNECTED,
-    #         MessageType.GAME_OVER,
-    #         MessageType.GAME_STATE,
-    #     ):
-    #         return self
-
-    #     expected_type_map = {
-    #         "init": InitPayload,
-    #         "set_word": SetWordPayload,
-    #         "guess": GuessPayload,
-    #         "turn": TurnPayload,
-    #         "result": ResultPayload,
-    #         "game_over": GameOverPayload,
-    #         "powerup": PowerUpPayload,
-    #         "powerup_result": PowerUpResultPayload,
-    #         "matched": MatchedPayload,
-    #         "error": ErrorPayload,
-    #         "info": InfoPayload,
-    #         "heartbeat": HeartbeatPayload,
-    #     }
-
-    #     expected_type = expected_type_map.get(self.type)
-    #     if expected_type and not isinstance(
-    #         self.data, tuple(expected_type_map.values())
-    #     ):
-    #         raise ValueError(
-    #             f"Expected {expected_type.__name__} for type '{self.type}', got {type(self.data).__name__}"
-    #         )
-
-    #     return self
