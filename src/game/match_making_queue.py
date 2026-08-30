@@ -2,6 +2,7 @@ from fastapi import WebSocket
 from typing import List, Tuple
 import asyncio
 import uuid
+from pydantic import BaseModel
 from src.models import *
 
 

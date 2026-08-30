@@ -27,7 +27,7 @@ class GuessResult(BaseModel):
 
 
 class GameAlgorithm:
-    async def ai_meaning(
+    async def word_meaning(
         self, word: str, ai_service: AiService
     ) -> WordDefinitionResponse:
         """

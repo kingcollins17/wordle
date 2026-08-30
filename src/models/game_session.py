@@ -18,7 +18,7 @@ from src.game.game_algorithm import (
 
 class PowerUpType(str, Enum):
     FISH_OUT = "fish_out"
-    AI_MEANING = "ai_meaning"
+    WORD_MEANING = "word_meaning"
     REVEAL_LETTER = "reveal_letter"
 
 
@@ -41,8 +41,8 @@ class PowerUpResult(BaseModel):
         None,
         description="Letter and its index revealed from the opponent's word (reveal_letter)",
     )
-    ai_meaning: Optional[WordDefinitionResponse] = Field(
-        None, description="AI-generated meaning of the word (ai_meaning)"
+    word_meaning: Optional[WordDefinitionResponse] = Field(
+        None, description="AI-generated meaning of the word (word_meaning)"
     )
 
 

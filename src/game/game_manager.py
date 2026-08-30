@@ -147,8 +147,8 @@ class GameManager:
                     ),
                     PowerUp(type=PowerUpType.FISH_OUT, remaining=player1_user.fish_out),
                     PowerUp(
-                        type=PowerUpType.AI_MEANING,
-                        remaining=player1_user.ai_meaning,
+                        type=PowerUpType.WORD_MEANING,
+                        remaining=player1_user.word_meaning,
                     ),
                 ],
                 score=0,
@@ -170,8 +170,8 @@ class GameManager:
                     ),
                     PowerUp(type=PowerUpType.FISH_OUT, remaining=player2_user.fish_out),
                     PowerUp(
-                        type=PowerUpType.AI_MEANING,
-                        remaining=player2_user.ai_meaning,
+                        type=PowerUpType.WORD_MEANING,
+                        remaining=player2_user.word_meaning,
                     ),
                 ],
                 attempts=[],
@@ -467,8 +467,8 @@ class GameManager:
             already_revealed_indices = already_revealed_indices or []
             result = algorithm.reveal_letter(secret_word, already_revealed_indices)
 
-        elif power_up_type == PowerUpType.AI_MEANING:
-            result = await algorithm.ai_meaning(secret_word, self.ai_service)
+        elif power_up_type == PowerUpType.WORD_MEANING:
+            result = await algorithm.word_meaning(secret_word, self.ai_service)
 
         else:
             raise GameError(f"Unknown power-up type: {power_up_type}")
@@ -491,7 +491,7 @@ class GameManager:
                     data=InfoPayload(
                         message=(
                             ai_txt
-                            if power_up_type == PowerUpType.AI_MEANING
+                            if power_up_type == PowerUpType.WORD_MEANING
                             else (
                                 fish_txt
                                 if power_up_type == PowerUpType.FISH_OUT

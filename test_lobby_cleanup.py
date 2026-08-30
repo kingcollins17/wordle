@@ -84,16 +84,10 @@ async def test_cleanup_worker():
     logger.info("Environment initialized")
     
     # Create database connection
-    db_manager = MySQLConnectionManager(
-        host=env.db_host,
-        port=env.db_port,
-        user=env.db_user,
-        password=env.db_password,
-        database=env.db_name,
-        pool_size=5,
-    )
+    db_manager = MySQLConnectionManager(env)
     await db_manager.initialize()
     logger.info("Database connection initialized")
+
     
     try:
         # Create repository

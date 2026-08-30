@@ -1,14 +1,15 @@
 from src.models import GameSession, GameState, PowerUpType, AfterGameHandler
-from src.repositories import UserRepository
+from src.core.repository import Repository
+from src.core.models.user import User
 
 
 class PowerUpPersistenceAfterGameHandler(AfterGameHandler):
     """
-    Persists remaining power-up counts (fish_out, reveal_letter, ai_meaning)
+    Persists remaining power-up counts (fish_out, reveal_letter, word_meaning)
     to the database for each player after the game ends.
     """
 
-    def __init__(self, user_repository: UserRepository):
+    def __init__(self, user_repository: Repository[User]):
         super().__init__()
         self.user_repository = user_repository
 
@@ -21,7 +22,7 @@ class PowerUpPersistenceAfterGameHandler(AfterGameHandler):
             powerup_map = {
                 PowerUpType.FISH_OUT: 0,
                 PowerUpType.REVEAL_LETTER: 0,
-                PowerUpType.AI_MEANING: 0,
+                PowerUpType.WORD_MEANING: 0,
             }
 
             # Override with actual remaining values
@@ -31,10 +32,9 @@ class PowerUpPersistenceAfterGameHandler(AfterGameHandler):
             updates = {
                 "fish_out": powerup_map[PowerUpType.FISH_OUT],
                 "reveal_letter": powerup_map[PowerUpType.REVEAL_LETTER],
-                "ai_meaning": powerup_map[PowerUpType.AI_MEANING],
+                "word_meaning": powerup_map[PowerUpType.WORD_MEANING],
             }
 
-            await self.user_repository.update_user_by_device_id(
-                device_id=player_id,
-                updates=updates,
-            )
+            user = await self.user_repository.get(id=player_id)
+            if user:
+                await self.user_repository.update(user, updates)

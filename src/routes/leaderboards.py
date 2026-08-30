@@ -1,18 +1,16 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
-from typing import Optional, List, Dict
+from typing import Optional, List
 from pydantic import BaseModel, Field
-import random
 
-
-from src.core import *
-from src.models.wordle_user import WordleUser
-from ..repositories.user_repository import UserRepository, get_user_repository
+from src.core import BaseResponse, APITags, QueryOptions
+from src.core.models.user import User
+from src.core.repository import Repository, GetRepository
 
 lb_router = APIRouter(prefix="/leaderboards", tags=[APITags.LEADERBOARD])
 
 
 class LeaderboardRank(BaseModel):
-    device_id: str
+    user_id: str
     username: Optional[str]
     xp: int = Field(...)
     rank: int = Field(...)
@@ -29,33 +27,25 @@ class LeaderboardResponse(BaseModel):
 
 @lb_router.get("/", response_model=BaseResponse[LeaderboardResponse])
 async def get_xp_leaderboard(
+    user_id: str = Query(..., description="User ID of the current user"),
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(100, ge=1, le=100, description="Items per page (max 100)"),
-    user_repo: UserRepository = Depends(get_user_repository),
-    device_id: str = Query(..., description="Device ID of the current user"),
+    user_repo: Repository[User] = Depends(GetRepository(User)),
 ):
-    """
-    Get the XP leaderboard with accurate ranking and current user position.
-
-    Returns:
-    - paginated top users (max 100 per page)
-    - current user's position (even if not in current page)
-    - total user count
-    """
     try:
-        # Get current user and validate
-        current_user = await user_repo.get_user_by_device_id(device_id=device_id)
+        current_user = await user_repo.get(id=user_id)
         if not current_user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        current_user = WordleUser(**current_user)
         # Get all users sorted by XP (descending)
-        all_users = await user_repo.list_users(order_by="xp", ascending=False)
+        all_users = await user_repo.get_many(
+            options=QueryOptions(order_by="xp", ascending=False)
+        )
         total_users = len(all_users)
 
         # Calculate current user's rank
         current_user_rank = next(
-            (i + 1 for i, u in enumerate(all_users) if u.device_id == device_id),
+            (i + 1 for i, u in enumerate(all_users) if u.id == user_id),
             None,
         )
 
@@ -66,81 +56,40 @@ async def get_xp_leaderboard(
         # Build leaderboard response
         leaderboard = [
             LeaderboardRank(
-                device_id=user.device_id,
-                username=user.username,
-                xp=user.xp,
+                # pyrefly: ignore [bad-argument-type]
+                user_id=u.id,
+                username=u.username,
+                xp=u.xp,
                 rank=offset + i + 1,
-                is_current_user=(user.device_id == device_id),
+                is_current_user=(u.id == user_id),
             )
-            for i, user in enumerate(paginated_users)
+            for i, u in enumerate(paginated_users)
         ]
 
-        fake = generate_fake_leaderboard(25)
-        leaderboard.extend(fake)
-        leaderboard = sort_leaderboard_by_xp(leaderboard)
-        # Prepare current user data if not in current page
-        current_user_data = None
-        if current_user_rank and not any(u.is_current_user for u in leaderboard):
-            current_user_data = LeaderboardRank(
-                device_id=current_user.device_id,
+        current_user_lb = (
+            LeaderboardRank(
+                user_id=current_user.id,
                 username=current_user.username,
                 xp=current_user.xp,
-                rank=current_user_rank,
+                rank=current_user_rank or 0,
                 is_current_user=True,
             )
+            if current_user_rank
+            else None
+        )
 
         return BaseResponse(
-            message="Leaderboards",
+            success=True,
+            message="Leaderboard fetched successfully",
             data=LeaderboardResponse(
                 top_users=leaderboard,
-                current_user=current_user_data,
+                current_user=current_user_lb,
                 total_users=total_users,
                 page=page,
                 per_page=per_page,
             ),
         )
-
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch leaderboard: {str(e)}"
-        )
-
-
-def generate_fake_leaderboard(count: int = 30) -> List[LeaderboardRank]:
-    """
-    Generates fake leaderboard data without sorting or ranking
-    """
-
-    count = min(count, 30)
-    return [
-        LeaderboardRank(
-            device_id=f"device_{random.randint(100000, 999999)}",
-            username=usernames[i],
-            xp=random.randint(100, 3000),
-            rank=0,  # Rank left as 0 since we're not calculating it
-            is_current_user=False,
-        )
-        for i in range(count)
-    ]
-
-
-def sort_leaderboard_by_xp(leaderboard: List[LeaderboardRank]) -> List[LeaderboardRank]:
-    """
-    Sorts a leaderboard by XP in descending order and updates ranks
-
-    Args:
-        leaderboard: List of LeaderboardRank objects to be sorted
-
-    Returns:
-        New sorted list with updated ranks
-    """
-    # Sort by XP descending
-    sorted_list = sorted(leaderboard, key=lambda x: x.xp, reverse=True)
-
-    # Update ranks based on new order
-    for rank, user in enumerate(sorted_list, start=1):
-        user.rank = rank
-
-    return sorted_list
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")

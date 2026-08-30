@@ -1,5 +1,6 @@
 from src.models import GameSession, GameState, PlayerRole, AfterGameHandler
-from src.repositories import UserRepository
+from src.core.repository import Repository
+from src.core.models.user import User
 
 
 class ScoringAfterGameHandler(AfterGameHandler):
@@ -8,7 +9,7 @@ class ScoringAfterGameHandler(AfterGameHandler):
     Responsible for calculating and updating the XP and coins of each player.
     """
 
-    def __init__(self, user_repository: UserRepository):
+    def __init__(self, user_repository: Repository[User]):
         super().__init__()
         self.user_repository = user_repository
 
@@ -53,14 +54,14 @@ class ScoringAfterGameHandler(AfterGameHandler):
             gained_xp = self.calculate_xp(attempts, won)
             gained_coins = self.calculate_coins(attempts, won)
 
-            user = await self.user_repository.get_user_by_device_id(player_id)
+            user = await self.user_repository.get(id=player_id)
             if not user:
                 continue  # User not found, skip
 
-            updated_xp = user.get("xp", 0) + gained_xp
-            updated_coins = user.get("coins", 0) + gained_coins
+            updated_xp = user.xp + gained_xp
+            updated_coins = user.coins + gained_coins
 
-            await self.user_repository.update_user_by_device_id(
-                device_id=player_id,
-                updates={"xp": updated_xp, "coins": updated_coins},
+            await self.user_repository.update(
+                user,
+                {"xp": updated_xp, "coins": updated_coins},
             )

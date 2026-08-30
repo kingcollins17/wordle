@@ -36,7 +36,6 @@ class FriendRequestWithSender(FriendRequest):
     """Friend request model with sender details"""
 
     sender_username: str
-    sender_email: Optional[str] = None
     sender_xp: int
     sender_coins: int
 
@@ -48,11 +47,9 @@ class FriendRequestWithDetails(FriendRequest):
     """Friend request model with both sender and receiver details"""
 
     sender_username: str
-    sender_email: Optional[str] = None
     sender_xp: int
     sender_coins: int
     receiver_username: str
-    receiver_email: Optional[str] = None
     receiver_xp: int
     receiver_coins: int
 

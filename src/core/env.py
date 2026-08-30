@@ -1,80 +1,92 @@
 import os
-from typing import Optional
-from dotenv import load_dotenv
+import json
+import logging
+from typing import Optional, Dict, Any
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
-class Environment:
-    def __init__(self, dotenv_path=".env"):
-        load_dotenv(dotenv_path)
+class Environment(BaseSettings):
+    """
+    Application Environment settings loaded via Pydantic BaseSettings.
+    Loads settings from .env file and environment variables.
+    """
 
-        # MySQL config
-        self.db_host = os.getenv("DB_HOST")
-        self.db_port = int(os.getenv("DB_PORT", 3306))
-        self.db_user = os.getenv("DB_USER")
-        self.db_password = os.getenv("DB_PASSWORD")
-        self.db_name = os.getenv("DB_NAME")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
-        # Redis config
-        self.redis_host = os.getenv("REDIS_HOST")
-        self.redis_port = int(os.getenv("REDIS_PORT", 6379))
-        self.redis_db = int(os.getenv("REDIS_DB", 0))
-        self.redis_username = os.getenv("REDIS_USERNAME", "default")
-        self.redis_password = os.getenv("REDIS_PASSWORD")
-        default_url = (
-            f"redis://{self.redis_username}:{self.redis_password}"
-            f"@{self.redis_host}:{self.redis_port}"
-        )
-        self.redis_url = os.getenv("REDIS_URL", default=default_url)
+    # MySQL config
+    db_host: Optional[str] = Field(default=None, validation_alias="DB_HOST")
+    db_port: int = Field(default=3306, validation_alias="DB_PORT")
+    db_user: Optional[str] = Field(default=None, validation_alias="DB_USER")
+    db_password: Optional[str] = Field(default="", validation_alias="DB_PASSWORD")
+    db_name: Optional[str] = Field(default=None, validation_alias="DB_NAME")
 
-        # Gemini AI config
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
-        self.gemini_api_url = os.getenv("GEMINI_API_URL")
-        self.gemini_api_model = os.getenv("GEMINI_API_MODEL")
+    # Redis config (optional)
+    redis_host: Optional[str] = Field(default=None, validation_alias="REDIS_HOST")
+    redis_port: Optional[int] = Field(default=6379, validation_alias="REDIS_PORT")
+    redis_db: Optional[int] = Field(default=0, validation_alias="REDIS_DB")
+    redis_username: Optional[str] = Field(default="default", validation_alias="REDIS_USERNAME")
+    redis_password: Optional[str] = Field(default="", validation_alias="REDIS_PASSWORD")
+    redis_url: Optional[str] = Field(default=None, validation_alias="REDIS_URL")
 
-        # Firebase config (from .env)
-        self.firebase_type = os.getenv("TYPE")
-        self.firebase_project_id = os.getenv("PROJECT_ID")
-        self.firebase_private_key_id = os.getenv("PRIVATE_KEY_ID")
-        # Replace \n with real newlines so Firebase SDK can parse the key
-        self.firebase_private_key = os.getenv("PRIVATE_KEY", "").replace("\\n", "\n")
-        self.firebase_client_email = os.getenv("CLIENT_EMAIL")
-        self.firebase_client_id = os.getenv("CLIENT_ID")
-        self.firebase_auth_uri = os.getenv("AUTH_URI")
-        self.firebase_token_uri = os.getenv("TOKEN_URI")
-        self.firebase_auth_provider_x509_cert_url = os.getenv(
-            "AUTH_PROVIDER_X509_CERT_URL"
-        )
-        self.firebase_client_x509_cert_url = os.getenv("CLIENT_X509_CERT_URL")
-        self.firebase_universe_domain = os.getenv("UNIVERSE_DOMAIN")
+    # Gemini AI config
+    gemini_api_key: Optional[str] = Field(default=None, validation_alias="GEMINI_API_KEY")
+    gemini_api_url: Optional[str] = Field(default=None, validation_alias="GEMINI_API_URL")
+    gemini_api_model: Optional[str] = Field(default=None, validation_alias="GEMINI_API_MODEL")
 
-    def get_firebase_config(self) -> dict:
-        """Return Firebase config as a dictionary for credentials.Certificate()."""
-        return {
-            "type": self.firebase_type,
-            "project_id": self.firebase_project_id,
-            "private_key_id": self.firebase_private_key_id,
-            "private_key": self.firebase_private_key,
-            "client_email": self.firebase_client_email,
-            "client_id": self.firebase_client_id,
-            "auth_uri": self.firebase_auth_uri,
-            "token_uri": self.firebase_token_uri,
-            "auth_provider_x509_cert_url": self.firebase_auth_provider_x509_cert_url,
-            "client_x509_cert_url": self.firebase_client_x509_cert_url,
-            "universe_domain": self.firebase_universe_domain,
-        }
+    # Firebase Service Account JSON string or file path
+    firebase_credentials: Optional[str] = Field(
+        default=None,
+        validation_alias="FIREBASE_CREDENTIALS",
+    )
+    firebase_credentials_path: Optional[str] = Field(
+        default=None,
+        validation_alias="FIREBASE_CREDENTIALS_PATH",
+    )
 
-    def __str__(self):
-        return (
-            f"MySQL -> Host: {self.db_host}, Port: {self.db_port}, User: {self.db_user}, "
-            f"Password: {self.db_password}, DB: {self.db_name}\n"
-            f"Redis -> Host: {self.redis_host}, Port: {self.redis_port}, DB: {self.redis_db}, "
-            f"User: {self.redis_username}, Password: {self.redis_password}, URL: {self.redis_url}\n"
-            f"Gemini -> API Key: {'set' if self.gemini_api_key else 'not set'}, "
-            f"URL: {self.gemini_api_url}, Model: {self.gemini_api_model}"
+    def model_post_init(self, __context: Any) -> None:
+        if not self.redis_url and self.redis_host:
+            user_part = f"{self.redis_username}:{self.redis_password}@" if self.redis_password else ""
+            self.redis_url = f"redis://{user_part}{self.redis_host}:{self.redis_port}"
+
+    def get_firebase_config(self) -> Dict[str, Any]:
+        """
+        Load and return Firebase service account configuration dictionary.
+        Prioritizes reading from FIREBASE_CREDENTIALS environment variable (JSON string),
+        falling back to reading from a JSON file path if specified.
+        """
+        # 1. Check FIREBASE_CREDENTIALS string (JSON string from .env)
+        if self.firebase_credentials and self.firebase_credentials.strip():
+            cred_str = self.firebase_credentials.strip()
+            if cred_str.startswith("{"):
+                try:
+                    return json.loads(cred_str)
+                except Exception as e:
+                    logger.warning(f"Failed to parse FIREBASE_CREDENTIALS JSON string directly: {e}")
+
+        # 2. Fallback to reading JSON from file if path is specified or exists in workspace
+        paths_to_check = [
+            self.firebase_credentials_path,
+            "wordle-93ae2-firebase-adminsdk-fbsvc-2166f22eb4.json",
+            "serviceAccountKey.json",
+        ]
+        for path in paths_to_check:
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+
+        raise FileNotFoundError(
+            "Firebase credentials not found in FIREBASE_CREDENTIALS env variable or JSON file."
         )
 
     def get_mysql_config(self) -> dict:
-        """Get MySQL configuration as a dictionary."""
         return {
             "host": self.db_host,
             "port": self.db_port,
@@ -83,22 +95,7 @@ class Environment:
             "db": self.db_name,
         }
 
-    def validate(self) -> bool:
-        """Validate that all required environment variables are set."""
-        required_vars = [
-            self.db_host,
-            self.db_user,
-            self.db_password,
-            self.db_name,
-            self.redis_host,
-            self.redis_password,
-            # Add gemini_api_key only if you want it to be required
-            # self.gemini_api_key
-        ]
-        return all(var is not None for var in required_vars)
-
     def get_gemini_config(self) -> dict:
-        """Get Gemini configuration as a dictionary."""
         return {
             "api_key": self.gemini_api_key,
             "api_url": self.gemini_api_url,
@@ -106,7 +103,6 @@ class Environment:
         }
 
     def get_redis_config(self) -> dict:
-        """Get Redis configuration as a dictionary."""
         return {
             "host": self.redis_host,
             "port": self.redis_port,
@@ -117,87 +113,39 @@ class Environment:
         }
 
 
+
+    def __str__(self):
+        return (
+            f"MySQL -> Host: {self.db_host}, Port: {self.db_port}, User: {self.db_user}, DB: {self.db_name}\n"
+            f"Redis -> Host: {self.redis_host}, Port: {self.redis_port}, URL: {self.redis_url}\n"
+            f"Firebase Credentials -> {'set in env' if self.firebase_credentials else 'not set'}"
+        )
+
+
 # Global environment instance
-_global_env: Optional[Environment] = None
+_global_env: Environment = Environment()
+APP_CONFIG = _global_env
 
 
-def initialize_environment(dotenv_path: str = ".env") -> Environment:
-    """
-    Initialize the global environment instance.
-
-    Args:
-        dotenv_path: Path to the .env file
-
-    Returns:
-        Environment: The initialized environment instance
-
-    Raises:
-        ValueError: If required environment variables are missing
-    """
-    global _global_env
-
-    _global_env = Environment(dotenv_path)
-
-    if not _global_env.validate():
-        raise ValueError(
-            "Missing required environment variables. Please check your .env file."
-        )
-
-    return _global_env
-
-
-def get_environment() -> Environment:
-    """
-    Dependency injection function to get the global environment instance.
-
-    Returns:
-        Environment: The global environment instance
-
-    Raises:
-        RuntimeError: If environment hasn't been initialized
-    """
-    if _global_env is None:
-        raise RuntimeError(
-            "Environment not initialized. Call initialize_environment() first."
-        )
-
-    return _global_env
-
-
-def get_environment_or_default(dotenv_path: str = ".env") -> Environment:
-    """
-    Get the global environment instance or create a default one.
-    This is useful for cases where you want automatic initialization.
-
-    Args:
-        dotenv_path: Path to the .env file (used only if not already initialized)
-
-    Returns:
-        Environment: The environment instance
-    """
-    global _global_env
-
-    if _global_env is None:
-        _global_env = Environment(dotenv_path)
-
-    return _global_env
-
-
-# Alternative dependency function that auto-initializes
 def get_env() -> Environment:
-    """
-    Shorter alias for dependency injection with auto-initialization.
+    """FastAPI Dependency to retrieve Environment settings."""
+    return _global_env
 
-    Returns:
-        Environment: The environment instance
-    """
-    return get_environment_or_default()
+
+get_environment = get_env
+
+
+def initialize_environment() -> Environment:
+    global _global_env, APP_CONFIG
+    _global_env = Environment()
+    APP_CONFIG = _global_env
+    return _global_env
 
 
 def reset_environment():
-    """
-    Reset the global environment instance.
-    Useful for testing or reloading configuration.
-    """
-    global _global_env
-    _global_env = None
+    global _global_env, APP_CONFIG
+    _global_env = Environment()
+    APP_CONFIG = _global_env
+
+
+

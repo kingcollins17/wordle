@@ -93,7 +93,7 @@ class PowerUpResultPayload(BaseModel):
     powerup_type: PowerUpType
     result: Union[
         List[str],  # for fish_letters
-        str,  # for ai_meaning
+        str,  # for word_meaning
         Dict[str, Union[str, int]],  # for reveal_letter: {"index": 2, "letter": "e"}
     ]
 

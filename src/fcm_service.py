@@ -24,23 +24,18 @@ class FCMErrorCode(Enum):
     INTERNAL_ERROR = "internal-error"
 
 
+from dataclasses import dataclass, field
+
 @dataclass
 class FCMResult:
     """Result of FCM operation."""
 
     success_count: int
     failure_count: int
-    failed_tokens: List[str] = None
-    errors: List[str] = None
-    message_ids: List[str] = None
+    failed_tokens: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    message_ids: List[str] = field(default_factory=list)
 
-    def __post_init__(self):
-        if self.failed_tokens is None:
-            self.failed_tokens = []
-        if self.errors is None:
-            self.errors = []
-        if self.message_ids is None:
-            self.message_ids = []
 
 
 class FCMService:
@@ -75,7 +70,7 @@ class FCMService:
             logger.setLevel(logging.INFO)
         return logger
 
-    def send_to_token(
+    def send(
         self,
         token: str,
         data: Optional[Dict[str, str]] = None,
@@ -429,7 +424,7 @@ class FCMService:
 
         return messaging.AndroidConfig(
             priority=priority,
-            ttl=f"{ttl_seconds}s" if ttl_seconds else None,
+            ttl=float(ttl_seconds or 60),
             collapse_key=collapse_key,
             notification=android_notification,
         )

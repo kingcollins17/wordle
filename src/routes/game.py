@@ -15,11 +15,12 @@ from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.config import Config
 from src.game.game_reward_manager import GameReward, get_game_reward_manager
-from src.repositories import UserRepository, get_user_repository
+from src.core.models.user import User
+from src.core.models.game import Game
+from src.core.repository import Repository, GetRepository
+from src.routes.auth import get_current_user
 from src.database import *
 from src.game import *
-from src.repositories.games_repository import GamesRepository, get_games_repository
-from src.repositories.user_repository import get_current_user
 
 game_router = APIRouter(prefix="/game", tags=[APITags.GAMES])
 
@@ -45,10 +46,8 @@ async def game(
     websocket: WebSocket,
     player_id: str = Query(...),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
-    redis_: RedisService = Depends(get_redis),
-    mysql: MySQLConnectionManager = Depends(get_mysql_manager),
     game_manager: GameManager = Depends(get_game_manager),
-    bot_manager: BotManager = Depends(get_bot_manager),
+    user_repo: Repository[User] = Depends(GetRepository(User)),
 ):
     """
     Simplified game WebSocket handler.
@@ -57,9 +56,7 @@ async def game(
     - Handles gameplay loop for in_progress games
     - Users signal readiness via REST endpoints
     """
-    repo = UserRepository(mysql, redis_)
-    user_data = await repo.get_user_by_device_id(device_id=player_id)
-    user = WordleUser(**user_data) if user_data else None
+    user = await user_repo.get(id=player_id)
     await ws_manager.connect(websocket=websocket, device_id=player_id, user=user)
 
     try:
@@ -69,7 +66,7 @@ async def game(
         game = await game_manager.get_game_session(game_id)
         if not game:
             raise GameError("Game not found")
-        
+
         if player_id not in game.players:
             raise GameError("Player not in game")
 
@@ -78,28 +75,9 @@ async def game(
             await ws_manager.disconnect(player_id, reason="Game Over")
             return
 
-     
-
-        # 🧠 BOT AWARE: If opponent is a bot and game is waiting, start immediately
-        if game.game_state == GameState.waiting:
-            player_ids = list(game.players.keys())
-            opponent_id = [pid for pid in player_ids if pid != player_id][0]
-
-            if opponent_id.startswith("bot_"):
-                # Bot is opponent, reconnect bot and auto-start game
-                await bot_manager.reconnect_bot(
-                    opponent_id,
-                    game_id,
-                    game_manager,
-                    word_length=game.settings.word_length,
-                )
-                # bot automatically vote to resume (start the game)
-                await game_manager.resume_game(game_id, opponent_id)  # Bot votes
-                game = await game_manager.get_game_session(game_id)
-        
         # broadcast game update before listening to socket
         # Send current game state to the connecting player
-     
+
         await game_manager.broadcast_game_state(game_id)
         # Keep WebSocket connection open and listen for messages
         # Connection stays open for all game states (waiting, paused, in_progress)
@@ -178,16 +156,13 @@ async def matchmaking_ws(
     queue: MatchmakingQueue = Depends(get_matchmaking_queue),
     game_manager: GameManager = Depends(get_game_manager),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
-    redis_: RedisService = Depends(get_redis),
-    mysql: MySQLConnectionManager = Depends(get_mysql_manager),
-    bot_manager: BotManager = Depends(get_bot_manager),
-    games_repo: GamesRepository = Depends(get_games_repository),
-    user_repo: UserRepository = Depends(get_user_repository),
+    user_repo: Repository[User] = Depends(GetRepository(User)),
+    games_repo: Repository[Game] = Depends(GetRepository(Game)),
 ):
     await ws_manager.connect(websocket=websocket, device_id=player_id)
-    user_data = await user_repo.get_user_by_device_id(player_id)
+    user = await user_repo.get(id=player_id)
 
-    if not user_data:
+    if not user:
         await ws_manager.disconnect(player_id, reason="User not found in database")
         return
 
@@ -196,8 +171,8 @@ async def matchmaking_ws(
         websocket,
         secret_word=secret_word,
     )
-    player1_user: Optional[WordleUser] = None
-    player2_user: Optional[WordleUser] = None
+    player1_user: Optional[User] = None
+    player2_user: Optional[User] = None
     player1_secret: Optional[str] = None
     player2_secret: Optional[str] = None
     try:
@@ -207,47 +182,16 @@ async def matchmaking_ws(
         assert (
             matched is None or matched.player1 != matched.player2
         ), "Player cannot be matched with self"
-        current_user = WordleUser(**user_data)
 
-        if matched is None:
-            # No match, assign bot as opponent
-            bot = bot_manager.create_bot(
-                difficulty="medium",
-                word_length=len(secret_word),
-                opponents_word=secret_word,
-            )
-
-            # Connect bot's virtual websocket
-            await ws_manager.connect(
-                bot.virtual_ws,
-                device_id=bot.bot_id,
-                user=bot.user,
-            )
-            player1_user = current_user
-            player1_secret = secret_word
-            player2_user = bot.user
-            player2_secret = bot.secret_word
-
-        else:
-            player1_user = WordleUser(
-                **await user_repo.get_user_by_device_id(
-                    matched.player1, bypass_cache=True
-                )
-            )
+        if matched:
+            player1_user = await user_repo.get(id=matched.player1)
             player1_secret = queue.secret_words.get(matched.player1)
-            # Matched with another player
-            player2_user = WordleUser(
-                **await user_repo.get_user_by_device_id(
-                    matched.player2, bypass_cache=True
-                )
-            )
+            player2_user = await user_repo.get(id=matched.player2)
             player2_secret = queue.secret_words.get(matched.player2)
 
         game = await game_manager.get_player_game_session(player_id)
 
-        if not game:
-            # if theres a game means the first person in the room has created the game
-            # Create game with player1 and
+        if not game and player1_user and player2_user:
             game = await game_manager.create_game(
                 player1_user=player1_user,
                 player2_user=player2_user,
@@ -256,12 +200,10 @@ async def matchmaking_ws(
                 settings=GameSettings(
                     rounds=1,
                     word_length=len(secret_word),
-                    versusAi=True,
+                    versusAi=False,
                     turn_time_limit=Config.DEFAULT_TURN_TIME_LIMIT,
                 ),
             )
-            # scorer = ScoringAfterGameHandler(user_repo)
-            # game_manager.register_after_game_handler(game.session_id, scorer)
             game_manager.register_after_game_handler(
                 game.session_id,
                 PowerUpPersistenceAfterGameHandler(user_repo),
@@ -274,31 +216,22 @@ async def matchmaking_ws(
                 ),
             )
 
-        # If playing vs bot, set context and start bot game
-        if matched is None:
-            bot.set_game_context(game.session_id, secret_word)
-            await bot.start_playing(game_manager, word_length=len(secret_word))
+        if game:
+            await ws_manager.send_to_device(
+                device_id=player_id,
+                message=WebSocketMessage(type=MessageType.MATCHED, data=game),
+            )
 
-        # Notify player of match
-        await ws_manager.send_to_device(
-            device_id=player_id,
-            message=WebSocketMessage(type=MessageType.MATCHED, data=game),
-        )
-
-        # Optional cleanup
         await queue.remove_player(player_id)
         await ws_manager.disconnect(
             player_id,
-            reason=f"Matched with user {player2_user.username if player_id == player1_user.device_id else player1_user.username}",
+            reason="Matchmaking complete",
         )
 
     except WebSocketDisconnect:
         await queue.remove_player(player_id)
     except Exception as e:
         logger.error(f"Error in matchmaking: {e}")
-        import traceback
-
-        traceback.print_exc()
         await ws_manager.disconnect(player_id, reason="Internal matchmaking error")
 
 
@@ -517,8 +450,8 @@ async def use_power_up(
                 if request.power_up_type == PowerUpType.REVEAL_LETTER
                 else None
             ),
-            ai_meaning=(
-                result if request.power_up_type == PowerUpType.AI_MEANING else None
+            word_meaning=(
+                result if request.power_up_type == PowerUpType.WORD_MEANING else None
             ),
         )
         return BaseResponse[PowerUpResult](
@@ -601,7 +534,7 @@ class RewardType(str, Enum):
     COINS = "coins"
     REVEAL_LETTER = "reveal_letter"
     FISH_OUT = "fish_out"
-    AI_MEANING = "ai_meaning"
+    WORD_MEANING = "word_meaning"
 
 
 class RewardUserRequest(BaseModel):
@@ -641,32 +574,23 @@ async def claim_game_rewards(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@game_router.post("/reward-user", response_model=BaseResponse[WordleUser])
+@game_router.post("/reward-user", response_model=BaseResponse[User])
 async def reward_user(
     request: RewardUserRequest,
-    user_repo: Annotated[UserRepository, Depends(get_user_repository)],
+    user_repo: Repository[User] = Depends(GetRepository(User)),
 ):
     try:
-        # Get the current user
-        user = await user_repo.get_user_by_device_id(request.device_id)
+        user = await user_repo.get(id=request.device_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Prepare the update based on reward type
         update_field = request.reward_type.value
-        updates = {update_field: user[update_field] + request.amount}
+        current_val = getattr(user, update_field, 0)
+        updated_user = await user_repo.update(user, {update_field: current_val + request.amount})
 
-        # Update the user
-        await user_repo.update_user_by_device_id(request.device_id, updates)
-
-        # Get the updated user to return
-        updated_user = await user_repo.get_user_by_device_id(
-            request.device_id, bypass_cache=True
+        return BaseResponse(
+            message="User rewarded successfully", data=updated_user
         )
-        return BaseResponse[WordleUser](
-            message="User rewarded successfully", data=WordleUser(**updated_user)
-        )
-
     except HTTPException:
         raise
     except Exception as e:

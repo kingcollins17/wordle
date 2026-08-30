@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+#
+*wordle-93ae2-firebase-adminsdk-fbsvc-2166f22eb4*
+
 # Virtual environment folders
 venv/
 env/
@@ -119,3 +122,4 @@ logs/
 # Docker
 *.pid
 *.pid.lock
+

@@ -1,14 +1,20 @@
-import os
+from src.core.env import APP_CONFIG
+import logging
 import firebase_admin
 from firebase_admin import credentials
+# from src.core.env import APP_CONFIG
 
-from src.core.env import get_environment_or_default
+logger = logging.getLogger(__name__)
 
-# Get current working directory
-cwd = os.getcwd()
+def setup_firebase():
 
-# Join with the filename
-service_account_path = os.path.join(cwd, "serviceAccountKey.json")
-environment = get_environment_or_default()
-cred = credentials.Certificate(environment.get_firebase_config())
-firebase_admin.initialize_app(cred)
+    try:
+        env = APP_CONFIG
+        cred_dict = env.get_firebase_config()
+        cred = credentials.Certificate(cred_dict)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin initialized successfully from service account JSON file.")
+    except Exception as e:
+        logger.warning(f"Firebase Admin initialization skipped or failed: {e}")
+        raise e
