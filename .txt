@@ -107,3 +107,41 @@ WHERE id >= (
 )
 ORDER BY id
 LIMIT 1;
+
+{
+  "success": true,
+  "message": "User created successfully",
+  "data": {
+    "avatar": "Ben",
+    "id": "4d9a5ce9-d478-4407-ad0d-f7e50caf8db8",
+    "coins": 500,
+    "reveal_letter": 1,
+    "word_meaning": 1,
+    "created_at": "2026-08-31T22:13:41",
+    "device_reg_token": null,
+    "xp": 10,
+    "username": "Alandro56",
+    "games_played": 0,
+    "fish_out": 1,
+    "updated_at": "2026-08-31T22:13:41"
+  }
+}
+
+{
+  "success": true,
+  "message": "User created successfully",
+  "data": {
+    "avatar": "Ben",
+    "id": "5b35388d-968a-4e9a-bb27-6b58419556e3",
+    "coins": 500,
+    "reveal_letter": 1,
+    "word_meaning": 1,
+    "created_at": "2026-08-31T22:14:14",
+    "device_reg_token": null,
+    "xp": 10,
+    "username": "Kidjo45",
+    "games_played": 0,
+    "fish_out": 1,
+    "updated_at": "2026-08-31T22:14:14"
+  }
+}

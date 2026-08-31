@@ -4,8 +4,11 @@ import random
 from pydantic import BaseModel, Field
 from typing import List, Dict
 
-from src.core.ai_service import AiService, WordDefinitionResponse
 
+class PowerUpType(str, Enum):
+    FISH_OUT = "fish_out"
+    REVEAL_LETTER = "reveal_letter"
+    WORD_MEANING = "word_meaning"
 
 class LetterState(str, Enum):
     correct = "correct"
@@ -27,15 +30,6 @@ class GuessResult(BaseModel):
 
 
 class GameAlgorithm:
-    async def word_meaning(
-        self, word: str, ai_service: AiService
-    ) -> WordDefinitionResponse:
-        """
-        Mocked method to return the AI-generated meaning of a word.
-        This should be replaced with an actual AI client integration.
-        """
-        word = word.upper()
-        return await ai_service.get_word_definition(word)
 
     def reveal_letter(
         self, secret_word: str, already_revealed_indices: List[int]

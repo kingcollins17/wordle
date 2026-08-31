@@ -5,7 +5,8 @@ from typing import TypeVar, Generic, Type, Optional, List, Dict, Any, Union
 from fastapi import Depends
 from sqlmodel import SQLModel, select
 
-from sqlalchemy import delete as sqlalchemy_delete, update as sqlalchemy_update
+from sqlalchemy import delete as sqlalchemy_delete, update as sqlalchemy_update, insert as sqlalchemy_insert
+from sqlalchemy.orm.attributes import flag_modified
 
 from .query_options import QueryOptions
 
@@ -113,12 +114,26 @@ class Repository(Generic[T]):
         await self.session.refresh(entity)
         return entity
 
-    async def add_many(self, entities: List[T]) -> List[T]:
-        """Bulk add entities to database session and commit."""
-        self.session.add_all(entities)
+    async def add_many(self, entities: List[T], refresh: bool = False) -> List[T]:
+        """
+        Bulk insert entities using SQLAlchemy multi-row INSERT statement for maximum speed.
+        
+        Args:
+            entities: List of SQLModel entities to insert.
+            refresh: If True, refreshes each entity from DB (default False for high performance).
+        """
+        if not entities:
+            return []
+
+        dict_values = [entity.model_dump() for entity in entities]
+        statement = sqlalchemy_insert(self.model).values(dict_values)
+        await self.session.exec(statement)
         await self.session.commit()
-        for entity in entities:
-            await self.session.refresh(entity)
+
+        if refresh:
+            for entity in entities:
+                await self.session.refresh(entity)
+
         return entities
 
     async def update(

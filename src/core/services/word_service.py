@@ -1,6 +1,6 @@
 import random
 import logging
-from typing import Optional
+from typing import Optional, List
 from sqlmodel import select, col
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy import func
@@ -22,90 +22,46 @@ class WordService:
 
     async def get_random(
         self,
-        length: int = 4,
+        length: Optional[int] = 4,
+        count: int = 1,
         session: Optional[AsyncSession] = None,
-    ) -> Optional[Word]:
+    ) -> List[Word]:
         """
-        Fetch a random word from the database of the specified length using an indexed random_id.
+        Fetch random words from the database of the specified length.
         
         Args:
-            length: Target word length (default: 4)
+            length: Target word length (default: 4, pass None for any length)
+            count: Number of random words to return (default: 1)
             session: Optional AsyncSession override
             
         Returns:
-            Optional[Word]: A randomly selected Word model instance or None if no matching word is found.
+            List[Word]: A list of randomly selected Word model instances.
         """
         sess = session or self.session
 
         if sess is not None:
-            return await self._get_random_with_session(sess, length)
+            return await self._get_random_with_session(sess, length=length, count=count)
         else:
             manager = get_mysql_manager()
             async with manager.session() as db_session:
-                return await self._get_random_with_session(db_session, length)
+                return await self._get_random_with_session(db_session, length=length, count=count)
 
     async def _get_random_with_session(
         self,
         session: AsyncSession,
-        length: int = 4,
-    ) -> Optional[Word]:
-        # 1. Get max random_id for active words of specified length
-        max_id_stmt = select(func.max(Word.random_id)).where(Word.is_active == True)
+        length: Optional[int] = 4,
+        count: int = 1,
+    ) -> List[Word]:
+        if count <= 0:
+            return []
+
+        stmt = select(Word).where(Word.is_active == True)
         if length is not None:
-            max_id_stmt = max_id_stmt.where(Word.word_length == length)
+            stmt = stmt.where(Word.word_length == length)
 
-        res = await session.exec(max_id_stmt)
-        max_id = res.one_or_none()
-
-        if max_id is not None and max_id > 0:
-            # 2. Select a random target ID between 1 and max_id
-            target_id = random.randint(1, max_id)
-
-            # 3. Query for first word with random_id >= target_id
-            stmt = (
-                select(Word)
-                .where(
-                    col(Word.random_id) >= target_id,
-                    Word.is_active == True,
-                )
-            )
-            if length is not None:
-                stmt = stmt.where(Word.word_length == length)
-
-            stmt = stmt.order_by(col(Word.random_id)).limit(1)
-
-            exec_res = await session.exec(stmt)
-            word = exec_res.first()
-
-            if word:
-                return word
-
-            # Wrap-around query if target_id was beyond highest random_id for this length
-            wrap_stmt = (
-                select(Word)
-                .where(
-                    col(Word.random_id) >= 1,
-                    Word.is_active == True,
-                )
-            )
-            if length is not None:
-                wrap_stmt = wrap_stmt.where(Word.word_length == length)
-
-            wrap_stmt = wrap_stmt.order_by(col(Word.random_id)).limit(1)
-            exec_res = await session.exec(wrap_stmt)
-            word = exec_res.first()
-
-            if word:
-                return word
-
-        # Fallback query for cases where random_id is missing or not set
-        fallback_stmt = select(Word).where(Word.is_active == True)
-        if length is not None:
-            fallback_stmt = fallback_stmt.where(Word.word_length == length)
-
-        fallback_stmt = fallback_stmt.order_by(func.random()).limit(1)
-        exec_res = await session.exec(fallback_stmt)
-        return exec_res.first()
+        stmt = stmt.order_by(func.random()).limit(count)
+        exec_res = await session.exec(stmt)
+        return list(exec_res.all())
 
 
 def get_word_service(
@@ -113,3 +69,65 @@ def get_word_service(
 ) -> WordService:
     """FastAPI dependency provider for WordService."""
     return WordService(session)
+
+
+async def seed_initial_words() -> int:
+    """
+    Startup function to seed initial words from fours_json, fives_json, sixes_json into database.
+    Converts all word strings to UPPERCASE before insertion.
+    Uses bulk insertion for maximum performance and avoids duplicating existing entries.
+    
+    Returns:
+        int: Number of new words inserted.
+    """
+    from src.game.fours_json import fours_json
+    from src.game.fives_json import fives_json
+    from src.game.sixes_json import sixes_json
+    from src.core.repository import Repository
+
+    all_words: dict[str, str] = {}
+    for source_dict in (fours_json, fives_json, sixes_json):
+        for raw_word, raw_meaning in source_dict.items():
+            upper_word = raw_word.strip().upper()
+            if upper_word:
+                meaning = raw_meaning.strip() if raw_meaning else ""
+                all_words[upper_word] = meaning
+
+    if not all_words:
+        logger.info("No words found in source JSON files to seed.")
+        return 0
+
+    manager = get_mysql_manager()
+    async with manager.session() as session:
+        # Fetch existing words from database
+        res = await session.exec(select(Word.word))
+        existing_words = {w.upper() for w in res.all()}
+
+        # Filter out words that already exist
+        words_to_insert = {w: m for w, m in all_words.items() if w not in existing_words}
+        if not words_to_insert:
+            logger.info("All initial words are already seeded in the database.")
+            return 0
+
+        # Fetch current max random_id
+        max_id_res = await session.exec(select(func.max(Word.random_id)))
+        current_max_id = max_id_res.one_or_none() or 0
+
+        # Create Word entities
+        entities = []
+        for idx, (word_str, meaning_str) in enumerate(words_to_insert.items(), start=1):
+            entities.append(
+                Word(
+                    word=word_str,
+                    meaning=meaning_str,
+                    word_length=len(word_str),
+                    is_active=True,
+                    random_id=current_max_id + idx,
+                )
+            )
+
+        # Fast bulk insert using optimized add_many
+        repo = Repository(Word, session)
+        await repo.add_many(entities, refresh=False)
+        logger.info(f"Successfully seeded {len(entities)} initial words into the database.")
+        return len(entities)

@@ -20,6 +20,7 @@ class GameStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     PAUSED = "paused"
     GAME_OVER = "game_over"
+    CANCELLED = "cancelled"
 
 
 class Game(SQLModel, table=True):
@@ -27,17 +28,17 @@ class Game(SQLModel, table=True):
     Database model representing the complete persistent state of an ongoing or completed game.
     """
     # pyrefly: ignore [bad-override]
-    __tablename__ = "games"
+    __tablename__: Any = "games"
 
     # Core Identifiers and Game Status
-    id: Optional[str] = Field(
+    id: str = Field(
         default_factory=generate_uuid,
         primary_key=True,
         description="Unique identifier for the game session",
     )
-    room_code: Optional[str] = Field(
-        default=None,
+    room_code: str = Field(
         index=True,
+        unique=True,
         max_length=20,
         description="Code associated with the game room or lobby",
     )
@@ -67,12 +68,12 @@ class Game(SQLModel, table=True):
     )
 
     # Secret Words assigned per round for each player
-    player_1_words: List[str] = Field(
+    player_1_words: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="List of secret words assigned to player 1 across all rounds",
     )
-    player_2_words: List[str] = Field(
+    player_2_words: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="List of secret words assigned to player 2 across all rounds",
@@ -109,44 +110,44 @@ class Game(SQLModel, table=True):
         default=0,
         description="Total score accumulated by player 2",
     )
-    player_1_attempts: List[str] = Field(
+    player_1_attempts: Optional[List[Dict[str, Any]]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
-        description="List of detailed guess attempt records for player 1",
+        description="Evaluated guess attempts for player 1 in the current turn",
     )
-    player_2_attempts: List[str] = Field(
+    player_2_attempts: Optional[List[Dict[str, Any]]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
-        description="List of detailed guess attempt records for player 2",
+        description="Evaluated guess attempts for player 2 in the current turn",
     )
 
     # Power-up Usage State Tracking for Player 1 and Player 2
-    player_1_fish_outs: List[str] = Field(
+    player_1_fish_outs: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="State/history of fish out power-ups used by player 1",
     )
-    player_2_fish_outs: List[str] = Field(
+    player_2_fish_outs: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="State/history of fish out power-ups used by player 2",
     )
-    player_1_reveal_letters: List[str] = Field(
+    player_1_reveal_letters: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="State/history of reveal letter power-ups used by player 1",
     )
-    player_2_reveal_letters: List[str] = Field(
+    player_2_reveal_letters: Optional[List[str]] = Field(
         default_factory=list,
         sa_column=Column(JSON),
         description="State/history of reveal letter power-ups used by player 2",
     )
-    player_1_meanings: Dict[str, str] = Field(
+    player_1_meanings: Optional[Dict[str, str]] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
         description="State/history of word meaning power-ups used by player 1",
     )
-    player_2_meanings: Dict[str, str] = Field(
+    player_2_meanings: Optional[Dict[str, str]] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
         description="State/history of word meaning power-ups used by player 2",

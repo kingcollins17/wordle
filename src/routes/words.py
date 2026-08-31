@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
+from sqlmodel import col
 
 from src.core.api_tags import APITags
 from src.core import BaseResponse, QueryOptions
@@ -11,11 +12,19 @@ from src.core.services.word_service import WordService, get_word_service
 words_router = APIRouter(prefix="/words", tags=[APITags.WORDS])
 
 
-class CreateWordRequest(BaseModel):
+class WordItem(BaseModel):
     word: str = Field(..., max_length=255)
     meaning: Optional[str] = None
     is_active: bool = False
     word_length: Optional[int] = None  # Calculated if not provided
+
+
+class CreateWordRequest(BaseModel):
+    words: Optional[List[WordItem]] = Field(None, description="List of word objects for bulk creation")
+    word: Optional[str] = Field(None, max_length=255, description="Single word string for single creation")
+    meaning: Optional[str] = None
+    is_active: bool = False
+    word_length: Optional[int] = None
 
 
 class UpdateWordRequest(BaseModel):
@@ -31,48 +40,111 @@ async def create_word(
     repo: Repository[Word] = Depends(GetRepository(Word)),
 ):
     try:
-        existing = await repo.get(options=QueryOptions(filters={"word": request.word}))
-        if existing:
-            raise HTTPException(status_code=400, detail="Word already exists")
+        raw_items: List[WordItem] = []
+        if request.words:
+            raw_items.extend(request.words)
+        if request.word:
+            raw_items.append(
+                WordItem(
+                    word=request.word,
+                    meaning=request.meaning,
+                    is_active=request.is_active,
+                    word_length=request.word_length,
+                )
+            )
 
-        word_len = request.word_length if request.word_length else len(request.word)
+        if not raw_items:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'words' list or 'word' field must be provided.",
+            )
 
-        word_entity = Word(
-            word=request.word,
-            meaning=request.meaning,
-            is_active=request.is_active,
-            word_length=word_len,
+        # Clean, convert to uppercase, and deduplicate items in request
+        items_by_upper: Dict[str, WordItem] = {}
+        for item in raw_items:
+            cleaned_word = item.word.strip().upper()
+            if not cleaned_word:
+                continue
+            if cleaned_word not in items_by_upper:
+                items_by_upper[cleaned_word] = item
+
+        if not items_by_upper:
+            raise HTTPException(status_code=400, detail="No valid non-empty words provided.")
+
+        words_to_check = list(items_by_upper.keys())
+
+        # Bulk query existing words in DB to avoid N+1 queries
+        existing_records = await repo.get_many(
+            options=QueryOptions(where=[col(Word.word).in_(words_to_check)])
         )
+        existing_words_set = {w.word.upper() for w in existing_records}
 
-        created_word = await repo.add(word_entity)
+        new_items = [
+            item for upper_w, item in items_by_upper.items()
+            if upper_w not in existing_words_set
+        ]
+
+        if not new_items:
+            if len(items_by_upper) == 1:
+                raise HTTPException(status_code=400, detail="Word already exists")
+            return BaseResponse(
+                success=True,
+                message="All provided words already exist in the database.",
+                data=[],
+            )
+
+        entities_to_create = []
+        for item in new_items:
+            upper_word = item.word.strip().upper()
+            word_len = item.word_length if item.word_length else len(upper_word)
+            entities_to_create.append(
+                Word(
+                    word=upper_word,
+                    meaning=item.meaning,
+                    is_active=item.is_active,
+                    word_length=word_len,
+                )
+            )
+
+        # Fast bulk insert using optimized add_many (refresh=False)
+        created_words = await repo.add_many(entities_to_create, refresh=False)
+
+        if len(raw_items) == 1 and len(created_words) == 1:
+            return BaseResponse(
+                success=True,
+                message="Word created successfully",
+                data=created_words[0],
+            )
 
         return BaseResponse(
             success=True,
-            message="Word created successfully",
-            data=created_word,
+            message=f"Successfully created {len(created_words)} word(s)",
+            data=created_words,
         )
+
     except HTTPException:
         raise
     except Exception as e:
         if "Duplicate entry" in str(e):
-            raise HTTPException(status_code=400, detail="Word already exists")
+            raise HTTPException(status_code=400, detail="One or more words already exist")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
 
-@words_router.get("/random", response_model=BaseResponse)
+@words_router.get("/random", response_model=BaseResponse[List[Word]])
 async def get_random_word(
-    length: int = 4,
+    length: Optional[int] = Query(4, ge=1),
+    count: int = Query(1, ge=1, le=100),
     word_service: WordService = Depends(get_word_service),
 ):
     try:
-        word = await word_service.get_random(length=length)
-        if not word:
-            raise HTTPException(status_code=404, detail="No matching word found")
+        words = await word_service.get_random(length=length, count=count)
+        if not words:
+            raise HTTPException(status_code=404, detail="No matching words found")
 
         return BaseResponse(
             success=True,
-            message="Random word fetched successfully",
-            data=word,
+            message="Random word(s) fetched successfully",
+            data=words,
         )
     except HTTPException:
         raise

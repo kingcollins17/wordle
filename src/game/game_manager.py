@@ -1,918 +1,416 @@
-import asyncio
+from src.core.utils.time import get_current_time
 import logging
-import random
-import string
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
-from datetime import datetime, timedelta
-from collections import Counter
-from uuid import uuid4
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from fastapi import Depends
+from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.ai_service import AiService, get_ai_service
-from src.database.redis_service import RedisService, get_redis
-from src.game.game_algorithm import *
+from src.core.models import Game, User, Word
+from src.core.models.game import GameStatus, Player
+from src.core.repository import GetRepository, Repository
+from src.core.query_options import QueryOptions
+from src.game.game_algorithm import GameAlgorithm, PowerUpType
+from src.game.game_events import GameEvent, GameEventType, PowerUpUsageResult
 from .websocket_manager import WebSocketManager, get_websocket_manager
-
-# from src.models.game_session import *
-
-from src.models import *
 
 logger = logging.getLogger(__name__)
 
 
 class GameError(Exception):
-    """Custom exception for game-related errors"""
-
+    """Custom exception for game-related errors."""
     pass
 
 
 class GameManager:
+    """
+    Manages a single game session's lifecycle.
+
+    All state lives in the Game database model. Each public method:
+      1. Loads the Game from DB
+      2. Validates & mutates
+      3. Persists back to DB
+      4. Broadcasts a GameEvent to both players via WebSocket
+    """
+
     def __init__(
         self,
-        redis_service: RedisService,
+        game_id: str,
         websocket_manager: WebSocketManager,
-        ai_service: AiService,
+        game_repo: Repository[Game],
+        user_repo: Repository[User],
+        word_repo: Repository[Word],
     ):
+        self.game_id = game_id
+        self.ws = websocket_manager
+        self.game_repo = game_repo
+        self.user_repo = user_repo
+        self.word_repo = word_repo
+        self.algorithm = GameAlgorithm()
 
-        self.redis = redis_service
-        self.websocket_manager = websocket_manager
-        self.ai_service: AiService = ai_service
-        self.active_games: Dict[str, GameSession] = {}  # session_id -> GameSession
-        self.after_game_handlers: Dict[str, List[AfterGameHandler]] = {}
-        self.player_to_session: Dict[str, str] = {}  # device_id -> session_id
+    # ── Helpers ──────────────────────────────────────────────────────────
 
-        self._session_locks: Dict[str, asyncio.Lock] = {}  # session_id -> asyncio.Lock
+    async def _get_game(self) -> Game:
+        """Load Game from DB or raise."""
+        game = await self.game_repo.get(id=self.game_id)
+        if game is None:
+            raise GameError(f"Game {self.game_id} not found")
+        return game
 
-        self._lock = asyncio.Lock()
-        self._cleanup_task: Optional[asyncio.Task] = None
-        self._ai_turn_check_task: Optional[asyncio.Task] = None
+    async def _save(self, game: Game) -> Game:
+        """Persist Game changes to DB."""
+        game.updated_at = get_current_time()
+        return await self.game_repo.update(game)
 
-        # Redis keys
-        self.GAME_SESSION_KEY_PREFIX = "game:session:"
-        self.PLAYER_SESSION_KEY_PREFIX = "game:player:"
-        self.ACTIVE_GAMES_KEY = "game:active_sessions"
-        self.GAME_TIMER_KEY_PREFIX = "game:timer:"
+    def _game_to_dict(self, game: Game) -> dict:
+        """Serialize Game to a dict for broadcasting (excludes secret words)."""
+        return {
+            "id": game.id,
+            "status": game.status,
+            "current_turn": game.current_turn,
+            "player_1": game.player_1,
+            "player_2": game.player_2,
+            "current_round": game.current_round,
+            "total_rounds": game.total_rounds,
+            "max_attempts": game.max_attempts,
+            "word_length": game.word_length,
+            "player_1_score": game.player_1_score,
+            "player_2_score": game.player_2_score,
+            "player_1_attempts": game.player_1_attempts,
+            "player_2_attempts": game.player_2_attempts,
+            "player_1_fish_outs": game.player_1_fish_outs,
+            "player_2_fish_outs": game.player_2_fish_outs,
+            "player_1_reveal_letters": game.player_1_reveal_letters,
+            "player_2_reveal_letters": game.player_2_reveal_letters,
+            "player_1_meanings": game.player_1_meanings,
+            "player_2_meanings": game.player_2_meanings,
+            "winner_id": game.winner_id,
+        }
 
-    # Modify the startup method to start the new task
-    async def startup(self):
-        """Initialize the game manager"""
-        logger.info("Starting Game Manager...")
+    async def _broadcast(self, game: Game, event_type: GameEventType, payload: dict | None = None) -> GameEvent:
+        """Build a GameEvent, broadcast to both players, and return it."""
+        event = GameEvent(
+            event_type=event_type,
+            game_state=self._game_to_dict(game),
+            payload=payload,
+        )
+        player_ids = [game.player_1]
+        if game.player_2:
+            player_ids.append(game.player_2)
+        await self.ws.broadcast(event, user_ids=player_ids)
+        return event
 
-        # Start background tasks
-        self._cleanup_task = asyncio.create_task(self._cleanup_expired_games())
-        self._ai_turn_check_task = asyncio.create_task(self._check_ai_turns())
-
-        # Restore active games from Redis if any
-        await self._restore_active_games()
-
-        logger.info("Game Manager started successfully")
-
-    # Modify the shutdown method to cancel the new task
-    async def shutdown(self):
-        """Cleanup game manager"""
-        logger.info("Shutting down Game Manager...")
-
-        # Cancel background tasks
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-        if hasattr(self, "_ai_turn_check_task") and self._ai_turn_check_task:
-            self._ai_turn_check_task.cancel()
-
-        # End all active games
-        session_ids = list(self.active_games.keys())
-        for session_id in session_ids:
-            await self.end_game(session_id, "server_shutdown")
-
-        logger.info("Game Manager shutdown complete")
-
-    async def create_game(
-        self,
-        player1_user: WordleUser,
-        player2_user: WordleUser,
-        player1_secret_words: List[str],
-        player2_secret_words: List[str],
-        settings: Optional[GameSettings] = None,
-    ) -> GameSession:
-        """Create a new game session between two players"""
-        async with self._lock:
-            if settings is None:
-                settings = GameSettings()
-
-            if len(player1_secret_words) != settings.rounds:
-                raise GameError(f"Player 1 must provide {settings.rounds} secret words")
-
-            if len(player2_secret_words) != settings.rounds:
-
-                raise GameError(f"Player 2 must provide {settings.rounds} secret words")
-
-            # Check if players are already in games (using device_id as key)
-            if player1_user.device_id in list(self.player_to_session.keys()):
-                raise GameError(
-                    f"Player p1 {player1_user.username} is already in a game"
-                )
-            if player2_user.device_id in list(self.player_to_session.keys()):
-                raise GameError(
-                    f"Player p2 {player2_user.username} is already in a game"
-                )
-
-            for word in player1_secret_words:
-                if len(word) != settings.word_length:
-                    raise GameError(
-                        f"Player 1 word '{word}' does not match word length {settings.word_length}"
-                    )
-
-            for word in player2_secret_words:
-                if len(word) != settings.word_length:
-                    raise GameError(
-                        f"Player 2 word '{word}' does not match word length {settings.word_length}"
-                    )
-
-            # Generate session ID and select words
-            # session_id = str(uuid4())
-            session_id='ff4b8ea6-66ba-4af6-ad30-63a88517818d'
-
-            # Create player info
-            player1_info = PlayerInfo(
-                player_id=player1_user.device_id,
-                username=player1_user.username,
-                avatar=player1_user.avatar,
-                role=PlayerRole.player1,
-                secret_words=player1_secret_words,
-                xp=player1_user.xp,
-                power_ups=[
-                    PowerUp(
-                        type=PowerUpType.REVEAL_LETTER,
-                        remaining=player1_user.reveal_letter,
-                    ),
-                    PowerUp(type=PowerUpType.FISH_OUT, remaining=player1_user.fish_out),
-                    PowerUp(
-                        type=PowerUpType.WORD_MEANING,
-                        remaining=player1_user.word_meaning,
-                    ),
-                ],
-                score=0,
-                connected=True,
-                attempts=[],
-            )
-
-            player2_info = PlayerInfo(
-                player_id=player2_user.device_id,
-                username=player2_user.username,
-                avatar=player2_user.avatar,
-                role=PlayerRole.player2,
-                secret_words=player2_secret_words,
-                xp=player2_user.xp,
-                power_ups=[
-                    PowerUp(
-                        type=PowerUpType.REVEAL_LETTER,
-                        remaining=player2_user.reveal_letter,
-                    ),
-                    PowerUp(type=PowerUpType.FISH_OUT, remaining=player2_user.fish_out),
-                    PowerUp(
-                        type=PowerUpType.WORD_MEANING,
-                        remaining=player2_user.word_meaning,
-                    ),
-                ],
-                attempts=[],
-            )
-
-            # Determine if bot is involved
-            one_is_bot = player1_user.device_id.startswith(
-                "bot_"
-            ) or player2_user.device_id.startswith("bot_")
-
-            current_turn = (
-                PlayerRole.player1
-                if one_is_bot
-                else random.choice([PlayerRole.player1, PlayerRole.player2])
-            )
-            # Create game session
-            game_session = GameSession(
-                session_id=session_id,
-                player1=player1_info,
-                player2=player2_info,
-                game_state=GameState.waiting,
-                current_turn=current_turn,
-                settings=settings,
-            )
-
-            # Store in memory and Redis
-            self.active_games[session_id] = game_session
-            self.player_to_session[player1_user.device_id] = session_id
-            self.player_to_session[player2_user.device_id] = session_id
-
-            await self._save_game_to_redis(game_session)
-            await self._update_player_session_mapping(
-                player1_user.device_id, session_id
-            )
-            await self._update_player_session_mapping(
-                player2_user.device_id, session_id
-            )
-
-            logger.info(
-                f"Created game session {session_id} between {player1_user.username} and {player2_user.username}"
-            )
-            return game_session
-
-    def register_after_game_handler(
-        self,
-        session_id: str,
-        handler: AfterGameHandler,
-    ):
-        if session_id not in self.after_game_handlers:
-            self.after_game_handlers[session_id] = []
-        self.after_game_handlers[session_id].append(handler)
-
-    async def pause_game(self, session_id: str, player_id: str) -> bool:
-        """Pause a game session"""
-        if session_id not in self.active_games:
-            raise GameError(f"Game session {session_id} not found")
-
-        game_session = self.active_games[session_id]
-
-        # Verify player is in the game
-        if player_id not in game_session.players:
-            raise GameError(f"Player {player_id} is not in this game")
-
-        if game_session.game_state != GameState.in_progress:
-            raise GameError(f"Game {session_id} is not in progress")
-
-        # Update game state to paused
-        game_session.game_state = GameState.paused
-        game_session.clear_resume_votes()  # Clear any existing resume votes
-        
-        # Save to Redis
-        await self._update_game_session(game_session)
-
-        # Broadcast pause state to all players
-        await self.broadcast_game_state(session_id)
-        
-        logger.info(f"Paused game session {session_id} by player {player_id}")
-        return True
-
-    async def resume_game(self, session_id: str, player_id: str) -> bool:
+    def _get_player_attrs(self, game: Game, player_id: str) -> tuple[str, str]:
         """
-        Request to resume a paused game. Uses voting system - when all players vote, game resumes.
-        Returns True if the game was resumed (all players voted), False if still waiting for votes.
+        Return the prefix pair (player_prefix, opponent_prefix) for a given player_id.
+        e.g. ("player_1", "player_2") or ("player_2", "player_1").
         """
-        if session_id not in self.active_games:
-            raise GameError(f"Game session {session_id} not found")
+        if player_id == game.player_1:
+            return ("player_1", "player_2")
+        elif player_id == game.player_2:
+            return ("player_2", "player_1")
+        raise GameError(f"Player {player_id} is not in this game")
 
-        game_session = self.active_games[session_id]
+    def _validate_in_progress(self, game: Game) -> None:
+        if game.status != GameStatus.IN_PROGRESS:
+            raise GameError("Game is not in progress")
 
-        # Verify player is in the game
-        if player_id not in game_session.players:
-            raise GameError(f"Player {player_id} is not in this game")
+    def _validate_turn(self, game: Game, player_id: str) -> None:
+        if not game.current_turn:
+            raise GameError("Game has no current turn")
 
-        if game_session.game_state not in (GameState.paused, GameState.waiting):
-            raise GameError(f"Game {session_id} is not paused")
+        turn_map = {Player.p1: game.player_1, Player.p2: game.player_2}
+        current_player_id = turn_map.get(game.current_turn)
+        if current_player_id != player_id:
+            raise GameError("It is not your turn")
 
-        # Request resume - this will automatically change state if all players voted
-        all_ready = game_session.request_resume(player_id)
-        
-        # Save to Redis
-        await self._update_game_session(game_session)
+    def _get_secret_word(self, game: Game, opponent_prefix: str) -> str:
+        """Get the opponent's secret word for the current round."""
+        words: List[str] = getattr(game, f"{opponent_prefix}_words", [])
+        idx = game.current_round - 1
+        if idx >= len(words):
+            raise GameError("No secret word for this round")
+        return words[idx]
 
-        if all_ready:
-            # All players have voted, game is now resumed
-            # Broadcast resume state to all players
-            # Broadcast resume state to all players
-            await self.broadcast_game_state(session_id)
-            logger.info(f"Resumed game session {session_id} - all players ready")
-            return True
+    # ── Public API ───────────────────────────────────────────────────────
+
+    async def get_game_state(self) -> dict:
+        """Return the current game state as a dict."""
+        game = await self._get_game()
+        return self._game_to_dict(game)
+
+    async def make_guess(self, player_id: str, guess: str) -> GameEvent:
+        """
+        Process a guess.
+
+        The current player guesses their opponent's secret word.
+        - Correct guess → score +1, handle turn/round end
+        - Max attempts reached → turn switches or round ends
+        - Otherwise → same player keeps guessing
+        """
+        game = await self._get_game()
+        self._validate_in_progress(game)
+        self._validate_turn(game, player_id)
+
+        if len(guess) != game.word_length:
+            raise GameError(f"Guess must be {game.word_length} letters")
+
+        player_prefix, opponent_prefix = self._get_player_attrs(game, player_id)
+        secret_word = self._get_secret_word(game, opponent_prefix)
+
+        # Evaluate
+        result = self.algorithm.evaluate_guess(secret_word, guess)
+
+        # Record attempt as full evaluated dictionary (guess + evaluated result)
+        attempt_record = {
+            "guess": guess,
+            "result": result.model_dump(),
+        }
+
+        if player_id == game.player_1:
+            if game.player_1_attempts is None:
+                game.player_1_attempts = []
+            game.player_1_attempts.append(attempt_record)
+            flag_modified(game, "player_1_attempts")
+            attempts_count = len(game.player_1_attempts)
         else:
-            # Still waiting for other players to vote
-            # Broadcast current state showing who has voted
-            # Broadcast current state showing who has voted
-            await self.broadcast_game_state(session_id)
-            logger.info(f"Player {player_id} voted to resume game {session_id}, waiting for others")
-            return False
-
-
-    async def _update_game_session(self, session: GameSession):
-        """Safely update the game session state in memory and Redis using a lock"""
-        lock = self._get_session_lock(session.session_id)
-
-        async with lock:
-            try:
-                self.active_games[session.session_id] = session
-
-                for player_id in session.players:
-                    self.player_to_session[player_id] = session.session_id
-
-                await self._save_game_to_redis(session)
-
-                logger.info(f"Updated game session {session.session_id} successfully")
-            except Exception as e:
-                logger.error(f"Failed to update game session {session.session_id}: {e}")
-                raise e
-
-    async def play(
-        self,
-        session_id: str,
-        player_id: str,
-        guess: str,
-    ):
-        """Process a guess from a player"""
-
-        if session_id not in self.active_games:
-            raise GameError(f"Game session {session_id} not found")
-
-        game_session = self.active_games[session_id]
-
-        player_info = game_session.players[player_id]
-        current_round = game_session.current_round
-
-        opponent_info = game_session.get_opponent(player_id)
-        if not opponent_info:
-            await self.websocket_manager.send_to_device(
-                device_id=player_id,
-                message=WebSocketMessage(
-                    type=MessageType.INFO,
-                    data=InfoPayload(message="Opponent not found"),
-                ),
-            )
-            return
-
-        if game_session.game_state != GameState.in_progress:
-            await self.websocket_manager.send_to_device(
-                device_id=player_id,
-                message=WebSocketMessage(
-                    type=MessageType.WAITING,
-                    data=WaitingPayload(waiting_for=opponent_info.role),
-                ),
-            )
-            return
-
-        if game_session.current_turn != player_info.role:
-            game_session.info = "Not your turn"
-           
-            
-            await self.websocket_manager.send_to_device(
-                device_id=player_id,
-                message=WebSocketMessage(
-                    type=MessageType.INFO, data=InfoPayload(message="Not your turn yet")
-                ),
-            )
-            return
-
-        if player_id not in game_session.players.keys():
-            raise GameError(f"Player {player_info.username} is not in this game")
-
-        if len(guess) != game_session.settings.word_length:
-            await self.websocket_manager.send_to_device(
-                device_id=player_id,
-                message=WebSocketMessage(
-                    type=MessageType.INFO,
-                    data=InfoPayload(
-                        message=f"Guess length must be {game_session.settings.word_length}",
-                    ),
-                ),
-            )
-            return
-
-        opponents_secret_word = opponent_info.secret_words[current_round - 1]
-
-        result = self._evaluate_guess(
-            guess,
-            target_word=opponents_secret_word,
-        )
-        # update attempt state
-        attempt = GuessAttempt(
-            player_id=player_id,
-            result=result,
-            guess=guess,
-        )
-        player_info.attempts.append(attempt)
+            if game.player_2_attempts is None:
+                game.player_2_attempts = []
+            game.player_2_attempts.append(attempt_record)
+            flag_modified(game, "player_2_attempts")
+            attempts_count = len(game.player_2_attempts)
 
         if result.is_correct():
-            # Correct guess handling
-            player_info.score += 1
-            game_session.round_winners.append(player_id)
-            game_session.info = f"Player {player_info.username} won the round!"
-
-            if game_session.is_last_round():
-                winner = (
-                    player_info
-                    if player_info.score > opponent_info.score
-                    else opponent_info
-                )
-                game_session.info = f"Game Over! {winner.username} won!"
-                await self._update_game_session(game_session)
-                
-                
-                await self.end_game(
-                    session_id,
-                    winner_id=winner.player_id,
-                    reason=f"Player {winner.username} won",
-                )
+            # Player guessed correctly — score +1, won turn
+            if player_id == game.player_1:
+                game.player_1_score += 1
             else:
-                game_session.next_turn()
-                game_session.next_round()
-                await self._update_game_session(game_session)
-                
-                await self.broadcast_game_update(
-                    MessageType.ROUND_RESULT,
-                    game_session,
+                game.player_2_score += 1
+            event_type, payload = self._handle_turn_won(game, player_id)
+            payload["guess_result"] = result.model_dump()
+        elif attempts_count >= game.max_attempts:
+            # Out of attempts — lost turn
+            event_type, payload = self._handle_turn_lost(game, player_id)
+            payload["guess_result"] = result.model_dump()
+        else:
+            # Keep guessing
+            event_type = GameEventType.GUESS_MADE
+            payload = {"guess": guess, "guess_result": result.model_dump()}
+
+        await self._save(game)
+        return await self._broadcast(game, event_type, payload)
+
+    def _reset_round_state(self, game: Game) -> None:
+        """Reset all round gameplay and powerup tracking state for both players when advancing rounds."""
+        game.player_1_attempts = []
+        game.player_2_attempts = []
+        game.player_1_fish_outs = []
+        game.player_2_fish_outs = []
+        game.player_1_reveal_letters = []
+        game.player_2_reveal_letters = []
+        game.player_1_meanings = {}
+        game.player_2_meanings = {}
+
+    def _handle_turn_won(self, game: Game, player_id: str) -> tuple[GameEventType, dict]:
+        """
+        Player guessed correctly and won their turn.
+        Switches turn to opponent or advances round if both players completed their turn.
+        """
+        if game.current_turn == Player.p1:
+            game.current_turn = Player.p2
+            return GameEventType.TURN_CHANGED, {
+                "won_by": player_id,
+                "current_turn": Player.p2.value,
+            }
+        else:
+            is_last_round = game.current_round >= game.total_rounds
+            if is_last_round:
+                return self._finalize_game(game)
+            else:
+                game.current_round += 1
+                game.current_turn = Player.p1
+                self._reset_round_state(game)
+                return GameEventType.ROUND_ENDED, {
+                    "won_by": player_id,
+                    "new_round": game.current_round,
+                }
+
+    def _handle_turn_lost(self, game: Game, player_id: str) -> tuple[GameEventType, dict]:
+        """
+        Player ran out of attempts and lost their turn.
+        Switches turn to opponent or advances round / ends game if both players completed their turn.
+        """
+        if game.current_turn == Player.p1:
+            game.current_turn = Player.p2
+            return GameEventType.TURN_LOST, {
+                "lost_by": player_id,
+                "current_turn": Player.p2.value,
+            }
+        else:
+            is_last_round = game.current_round >= game.total_rounds
+            if is_last_round:
+                return self._finalize_game(game)
+            else:
+                game.current_round += 1
+                game.current_turn = Player.p1
+                self._reset_round_state(game)
+                return GameEventType.TURN_LOST, {
+                    "lost_by": player_id,
+                    "new_round": game.current_round,
+                }
+
+    def _finalize_game(self, game: Game) -> tuple[GameEventType, dict]:
+        """Determine winner by score and mark game as over."""
+        game.status = GameStatus.GAME_OVER
+        game.completed_at = get_current_time()
+
+        if game.player_1_score > game.player_2_score:
+            game.winner_id = game.player_1
+            reason = f"Player 1 wins {game.player_1_score}-{game.player_2_score}"
+        elif game.player_2_score > game.player_1_score:
+            game.winner_id = game.player_2
+            reason = f"Player 2 wins {game.player_2_score}-{game.player_1_score}"
+        else:
+            game.winner_id = None
+            reason = f"Draw at {game.player_1_score}-{game.player_2_score}"
+
+        return GameEventType.GAME_OVER, {
+            "winner_id": game.winner_id,
+            "reason": reason,
+            "player_1_score": game.player_1_score,
+            "player_2_score": game.player_2_score,
+        }
+
+    async def use_powerup(self, player_id: str, powerup_type: PowerUpType) -> PowerUpUsageResult:
+        """
+        Use a power-up. Decrements the user's count in the User table
+        and applies the effect via GameAlgorithm.
+
+        Returns a PowerUpUsageResult with the relevant field populated.
+        """
+        game = await self._get_game()
+        self._validate_in_progress(game)
+        self._validate_turn(game, player_id)
+
+        # Check & decrement user's powerup in DB
+        user = await self.user_repo.get(id=player_id)
+        if user is None:
+            raise GameError(f"User {player_id} not found")
+
+        field_map = {
+            PowerUpType.FISH_OUT: "fish_out",
+            PowerUpType.REVEAL_LETTER: "reveal_letter",
+            PowerUpType.WORD_MEANING: "word_meaning",
+        }
+        field_name = field_map[powerup_type]
+        remaining = getattr(user, field_name, 0)
+        if remaining <= 0:
+            raise GameError(f"No {powerup_type.value} power-ups remaining")
+        await self.user_repo.update(user, {field_name: remaining - 1})
+
+        # Get opponent's secret word
+        player_prefix, opponent_prefix = self._get_player_attrs(game, player_id)
+        secret_word = self._get_secret_word(game, opponent_prefix)
+
+        # Apply effect
+        result = PowerUpUsageResult(powerup_type=powerup_type)
+
+        if powerup_type == PowerUpType.FISH_OUT:
+            attr_name = f"{player_prefix}_fish_outs"
+            already_fished: List[str] = getattr(game, attr_name) or []
+            letter = self.algorithm.fishout(secret_word, already_fished)
+            new_fished = list(already_fished) + [letter]
+            setattr(game, attr_name, new_fished)
+            flag_modified(game, attr_name)
+            result.fished_letter = letter
+
+        elif powerup_type == PowerUpType.REVEAL_LETTER:
+            attr_name = f"{player_prefix}_reveal_letters"
+            already_revealed: List[str] = getattr(game, attr_name) or []
+            revealed_indices = [
+                int(entry.split(":")[0])
+                for entry in already_revealed
+                if ":" in entry and entry.split(":")[0].isdigit()
+            ]
+            letter, index = self.algorithm.reveal_letter(secret_word, revealed_indices)
+            new_revealed = list(already_revealed) + [f"{index}:{letter}"]
+            setattr(game, attr_name, new_revealed)
+            flag_modified(game, attr_name)
+            result.revealed_letter = letter
+            result.revealed_index = index
+
+        elif powerup_type == PowerUpType.WORD_MEANING:
+            attr_name = f"{player_prefix}_meanings"
+            meanings: dict = dict(getattr(game, attr_name) or {})
+            upper_word = secret_word.upper()
+            if upper_word not in meanings:
+                # Look up meaning from Word table
+                word_record = await self.word_repo.get(
+                    options=QueryOptions(filters={"word": secret_word})
                 )
-        else:
-            game_session.info = f"Player {player_info.username} guessed {guess}"
-            game_session.next_turn()
-            await self._update_game_session(game_session)
+                meaning = word_record.meaning if word_record and word_record.meaning else "Meaning not available"
+                meanings[upper_word] = meaning
+                setattr(game, attr_name, meanings)
+                flag_modified(game, attr_name)
+            result.word_meaning = meanings[upper_word]
 
-            await self.broadcast_game_update(
-                MessageType.GUESS,
-                game_session,
-            )
-
-    async def use_power_up(
-        self,
-        player_id: str,
-        power_up_type: PowerUpType,
-        already_revealed_indices: Optional[List[int]] = None,
-        already_fished_letters: Optional[List[str]] = None,
-    ) -> Any:
-        game_session = await self.get_player_game_session(player_id)
-        if not game_session:
-            raise GameError("No active game session found for player")
-
-        player_info = game_session.get_player_by_id(player_id)
-
-        if game_session.current_turn != player_info.role:
-            raise GameError("It's not your turn to use a power-up")
-        # Fetch opponent info to get their current secret word
-        opponent = game_session.get_opponent(player_info.player_id)
-
-        secret_word = game_session.get_current_word(opponent.player_id)
-
-        # Find the power-up
-        power_up = next(
-            (p for p in player_info.power_ups if p.type == power_up_type), None
-        )
-
-        if not power_up:
-            raise GameError(f"{power_up_type.value} power-up not found")
-        if power_up.remaining <= 0:
-            raise GameError(f"No remaining uses for {power_up_type.value}")
-
-        algorithm = GameAlgorithm()
-
-        # Dispatch logic based on power-up type
-        if power_up_type == PowerUpType.FISH_OUT:
-            already_fished_letters = already_fished_letters or []
-            result = algorithm.fishout(secret_word, already_fished_letters)
-
-        elif power_up_type == PowerUpType.REVEAL_LETTER:
-            already_revealed_indices = already_revealed_indices or []
-            result = algorithm.reveal_letter(secret_word, already_revealed_indices)
-
-        elif power_up_type == PowerUpType.WORD_MEANING:
-            result = await algorithm.word_meaning(secret_word, self.ai_service)
-
-        else:
-            raise GameError(f"Unknown power-up type: {power_up_type}")
-
-        # Decrement power-up use
-        power_up.remaining -= 1
-
-        # Update and persist session
-        await self._update_game_session(game_session)
-
-        # notify opponent
-        ai_txt = f"{player_info.username} has revealed the meaning of your word"
-        fish_txt = f"{player_info.username} has fished out a letter not in your word"
-        reveal_txt = f"{player_info.username} has revealed one letter from your word"
-        try:
-            await self.websocket_manager.send_to_device(
-                device_id=opponent.player_id,
-                message=WebSocketMessage(
-                    type=MessageType.INFO,
-                    data=InfoPayload(
-                        message=(
-                            ai_txt
-                            if power_up_type == PowerUpType.WORD_MEANING
-                            else (
-                                fish_txt
-                                if power_up_type == PowerUpType.FISH_OUT
-                                else reveal_txt
-                            )
-                        )
-                    ),
-                ),
-            )
-        except:
-            logger.error("Error sending message to opponent")
-
+        await self._save(game)
+        await self._broadcast(game, GameEventType.POWERUP_USED, result.model_dump())
         return result
 
-    async def increment_power_up(
+    async def pause_game(self, player_id: str) -> GameEvent:
+        """Pause the game. Only works while in progress."""
+        game = await self._get_game()
+        self._validate_in_progress(game)
+        self._get_player_attrs(game, player_id)  # validate player is in game
+
+        game.status = GameStatus.PAUSED
+        await self._save(game)
+        return await self._broadcast(game, GameEventType.GAME_PAUSED, {"paused_by": player_id})
+
+    async def resume_game(self, player_id: str) -> GameEvent:
+        """Resume a paused game."""
+        game = await self._get_game()
+        if game.status != GameStatus.PAUSED:
+            raise GameError("Game is not paused")
+        self._get_player_attrs(game, player_id)  # validate player is in game
+
+        game.status = GameStatus.IN_PROGRESS
+        await self._save(game)
+        return await self._broadcast(game, GameEventType.GAME_RESUMED, {"resumed_by": player_id})
+
+    async def end_game(self, reason: str = "Game ended") -> GameEvent:
+        """Force-end the game. Winner determined by current scores."""
+        game = await self._get_game()
+        if game.status == GameStatus.GAME_OVER:
+            raise GameError("Game is already over")
+
+        event_type, payload = self._finalize_game(game)
+        payload["reason"] = reason
+
+        await self._save(game)
+        return await self._broadcast(game, event_type, payload)
+
+
+# ── FastAPI Dependency ───────────────────────────────────────────────────────
+
+
+class GetGameManager:
+    """FastAPI dependency that constructs a GameManager for a given game_id."""
+        
+
+    def __call__(
         self,
-        player_id: str,
-        power_up_type: PowerUpType,
-        amount: int = 1,
-    ):
-        """Increment a player's power-up count."""
-        game_session = await self.get_player_game_session(player_id)
-        if not game_session:
-            raise GameError("No active game session found for player")
-
-        player_info = game_session.get_player_by_id(player_id)
-        if not player_info:
-            raise GameError("Player not found in session")
-
-        power_up = next(
-            (p for p in player_info.power_ups if p.type == power_up_type), None
+        game_id: str,
+        websocket_manager: WebSocketManager = Depends(get_websocket_manager),
+        game_repo: Repository[Game] = Depends(GetRepository(Game)),
+        user_repo: Repository[User] = Depends(GetRepository(User)),
+        word_repo: Repository[Word] = Depends(GetRepository(Word)),
+    ) -> GameManager:
+        return GameManager(
+            game_id=game_id,
+            websocket_manager=websocket_manager,
+            game_repo=game_repo,
+            user_repo=user_repo,
+            word_repo=word_repo,
         )
-        if not power_up:
-            raise GameError(f"{power_up_type.value} power-up not found for player")
-
-        power_up.remaining += amount
-        await self._update_game_session(game_session)
-
-        logger.info(
-            f"Incremented {power_up_type.value} by {amount} for player {player_id}"
-        )
-        return power_up.remaining
-
-    async def decrement_power_up(
-        self,
-        player_id: str,
-        power_up_type: PowerUpType,
-        amount: int = 1,
-    ):
-        """Decrement a player's power-up count."""
-        game_session = await self.get_player_game_session(player_id)
-        if not game_session:
-            raise GameError("No active game session found for player")
-
-        player_info = game_session.get_player_by_id(player_id)
-        if not player_info:
-            raise GameError("Player not found in session")
-
-        power_up = next(
-            (p for p in player_info.power_ups if p.type == power_up_type), None
-        )
-        if not power_up:
-            raise GameError(f"{power_up_type.value} power-up not found for player")
-
-        if power_up.remaining < amount:
-            raise GameError(
-                f"Cannot decrement {power_up_type.value}: insufficient remaining uses"
-            )
-
-        power_up.remaining -= amount
-        await self._update_game_session(game_session)
-
-        logger.info(
-            f"Decremented {power_up_type.value} by {amount} for player {player_id}"
-        )
-        return power_up.remaining
-
-    async def end_game(
-        self,
-        session_id: str,
-        winner_id: Optional[str] = None,
-        reason: str = "manual",
-        # whether game outcome would be broadcasted
-        should_broadcast: bool = True,
-        exclude_disconnect: list[str] = [],
-    ) -> bool:
-        """End a game session"""
-        if session_id not in self.active_games:
-            return False
-
-        game_session = self.active_games[session_id]
-
-        # Determine winner based on round_winners if not provided
-        if winner_id is None and game_session.round_winners:
-            # Filter out None values just in case
-            valid_winners = [w for w in game_session.round_winners if w]
-            if valid_winners:
-                counts = Counter(valid_winners)
-                most_common = counts.most_common()
-                
-                # Check for draw
-                if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
-                    winner_id = None
-                    if reason == "manual": # Only update reason if not specific
-                         reason = "Draw"
-                else:
-                    winner_id = most_common[0][0]
-            else:
-                 winner_id = None # No valid winners
-
-        # Update game state
-        game_session.game_state = GameState.game_over
-        game_session.outcome = GameOutcome(
-            winner_id=winner_id,
-            reason=reason,
-            completed_at=datetime.now(timezone.utc),
-        )
-        await self._update_game_session(game_session)
-        # Notify players
-        if should_broadcast:
-            await self.broadcast_game_update(
-                MessageType.GAME_OVER,
-                game_session,
-            )
-
-        players_to_disconnect = [
-            pid for pid in game_session.players.keys() if pid not in exclude_disconnect
-        ]
-        if players_to_disconnect:
-            await self.websocket_manager.disconnect_all(players_to_disconnect)
-
-        # Run all after-game handlers
-        handlers = self.after_game_handlers.get(session_id, [])
-        for handler in handlers:
-            try:
-                await handler(game_session)
-            except Exception as e:
-                logger.error(f"Error in after-game handler for {session_id}: {e}")
-
-        self.after_game_handlers.pop(session_id, None)
-        # Clean up
-        await self._cleanup_game_session(session_id)
-
-        logger.info(f"Ended game session {session_id} - {reason}")
-        return True
-
-    async def get_game_session(self, session_id: str) -> Optional[GameSession]:
-        """Get a game session by ID"""
-        if session_id in self.active_games:
-            return self.active_games[session_id]
-
-        # Try to load from Redis
-        return await self._load_game_from_redis(session_id)
-
-    async def get_player_game_session(self, player_id: str) -> Optional[GameSession]:
-        """Get the game session a player is currently in"""
-        async with self._lock:
-            if player_id in list(self.player_to_session.keys()):
-                session_id = self.player_to_session[player_id]
-                return await self.get_game_session(session_id)
-            return None
-
-    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
-        """Get or create an asyncio.Lock for a session"""
-        if session_id not in self._session_locks:
-            self._session_locks[session_id] = asyncio.Lock()
-        return self._session_locks[session_id]
-
-    def _evaluate_guess(self, guess: str, target_word: str) -> GuessResult:
-        """Evaluate a guess against the target word"""
-        assert len(guess) == len(
-            target_word
-        ), f"Length of target and guess do not match {target_word} {guess}"
-        return GameAlgorithm().evaluate_guess(target_word, guess)
-
-    async def broadcast_game_state(self, session_id: str):
-        """Broadcast the current game state to all players in the session"""
-        if session_id not in self.active_games:
-            return
-
-        game_session = self.active_games[session_id]
-        await self.broadcast_game_update(
-            MessageType.GAME_STATE,
-            game_session,
-        )
-
-    async def broadcast_game_update(
-        self,
-        message_type: MessageType,
-        data: GameSession,
-    ):
-        """Broadcast game update to all players in the session"""
-        if data.session_id not in self.active_games:
-            return
-        message = WebSocketMessage(type=message_type, data=data)
-        game_session = self.active_games[data.session_id]
-        devices = list(game_session.players.keys())
-        # Broadcast to all devices in the game
-        await self.websocket_manager.broadcast_to_devices(devices, message)
-
-    async def _save_game_to_redis(self, game_session: GameSession):
-        """Save game session to Redis"""
-        try:
-            await self.redis.set_json(
-                f"{self.GAME_SESSION_KEY_PREFIX}{game_session.session_id}",
-                game_session.model_dump(),
-                expire_seconds=3600,  # 1 hour
-            )
-
-            await self.redis.add_to_set(self.ACTIVE_GAMES_KEY, game_session.session_id)
-        except Exception as e:
-            logger.error(f"Failed to save game {game_session.session_id} to Redis: {e}")
-
-    async def _load_game_from_redis(self, session_id: str) -> Optional[GameSession]:
-        """Load game session from Redis"""
-        try:
-            data = await self.redis.get_json(
-                f"{self.GAME_SESSION_KEY_PREFIX}{session_id}"
-            )
-            if data:
-                return GameSession(**data)
-        except Exception as e:
-            logger.error(f"Failed to load game {session_id} from Redis: {e}")
-        return None
-
-    async def _update_player_session_mapping(self, player_id: str, session_id: str):
-        """Update player to session mapping in Redis"""
-        try:
-            await self.redis.set_json(
-                f"{self.PLAYER_SESSION_KEY_PREFIX}{player_id}",
-                {"session_id": session_id},
-                expire_seconds=3600,
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to update player session mapping for {player_id}: {e}"
-            )
-
-    async def _cleanup_game_session(self, session_id: str):
-        """Clean up a game session from memory and Redis"""
-        if session_id not in self.active_games:
-            return
-
-        game_session = self.active_games[session_id]
-
-        # Remove from memory mappings - only need to clean player_to_session now
-
-        for player_id in list(game_session.players.keys()):
-            self.player_to_session.pop(player_id, None)
-
-        # Remove from active games
-        self.active_games.pop(session_id, None)
-        # Clean up Redis
-        try:
-            await self.redis.redis.delete(f"{self.GAME_SESSION_KEY_PREFIX}{session_id}")
-            await self.redis.redis.delete(f"{self.GAME_TIMER_KEY_PREFIX}{session_id}")
-            await self.redis.redis.srem(self.ACTIVE_GAMES_KEY, session_id)
-
-            for player_id in game_session.players.keys():
-                await self.redis.redis.delete(
-                    f"{self.PLAYER_SESSION_KEY_PREFIX}{player_id}"
-                )
-
-        except Exception as e:
-            logger.error(f"Failed to cleanup Redis data for game {session_id}: {e}")
-            raise e
-
-    async def _restore_active_games(self):
-        """Restore active games from Redis on startup"""
-        try:
-            session_ids = await self.redis.get_set(self.ACTIVE_GAMES_KEY)
-
-            for session_id in session_ids:
-                game_session = await self._load_game_from_redis(session_id)
-                if game_session:
-                    # Only restore games that are not completed
-                    if game_session.game_state != "completed":
-                        self.active_games[session_id] = game_session
-
-                        # Restore mappings - only need player_to_session now
-                        for player_id in game_session.players.keys():
-                            self.player_to_session[player_id] = session_id
-
-                        logger.info(f"Restored game session {session_id}")
-                    else:
-                        # Clean up completed games
-                        await self._cleanup_game_session(session_id)
-
-        except Exception as e:
-            logger.error(f"Failed to restore active games: {e}")
-
-    async def _cleanup_expired_games(self):
-        """Background task to clean up expired games"""
-        while True:
-            try:
-
-                await asyncio.sleep(60)  # Check every minute
-
-                current_time = datetime.now()
-                expired_sessions = []
-
-                for session_id, game_session in list(self.active_games.items()):
-                    # Check for expired turn timers
-                    if (
-                        game_session.turn_timer_expires_at
-                        and current_time > game_session.turn_timer_expires_at
-                        and game_session.game_state != GameState.waiting
-                    ):
-
-                        # End game due to timeout
-                        player = game_session.get_player_by_role(
-                            game_session.current_turn
-                        )
-                        opponent = game_session.get_opponent(player.player_id)
-                        if opponent:
-                            await self.end_game(
-                                session_id,
-                                opponent.player_id,
-                                "turn_timeout",
-                            )
-
-                    # Check for games that have been inactive too long
-                    time_since_created = current_time - game_session.created_at
-                    if time_since_created > timedelta(hours=2):  # 2 hour limit
-                        expired_sessions.append(session_id)
-
-                # Clean up expired sessions
-                for session_id in expired_sessions:
-                    await self.end_game(
-                        session_id,
-                        reason="session_expired",
-                    )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in cleanup task: {e}")
-
-    # Add this method to the GameManager class
-    async def _check_ai_turns(self):
-        """Background task to check for expired turns in AI games"""
-        while True:
-            try:
-                await asyncio.sleep(3600)  # Check every 60 minutes
-
-                current_time = datetime.now()
-                sessions_to_update: Set[str] = set()
-
-                for session_id, game_session in list(self.active_games.items()):
-                    # Skip if not versus AI or not player2's turn
-                    if (
-                        not game_session.settings.versusAi
-                        or game_session.current_turn != PlayerRole.player2
-                    ):
-                        continue
-
-                    # Check if turn timer has expired
-                    if (
-                        game_session.turn_timer_expires_at
-                        and current_time > game_session.turn_timer_expires_at
-                    ):
-                        sessions_to_update.add(session_id)
-
-                # Process sessions that need updating
-                for session_id in sessions_to_update:
-                    try:
-                        game_session = self.active_games[session_id]
-                        game_session.next_turn()
-                        await self._update_game_session(game_session)
-
-                        # Broadcast the turn change
-                        await self.broadcast_game_update(
-                            MessageType.TURN,
-                            game_session,
-                        )
-                        logger.info(
-                            f"Turn switched in AI game {session_id} due to timeout"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to process AI turn timeout for {session_id}: {e}"
-                        )
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in AI turn check task: {e}")
-
-
-# Global game manager instance
-_game_manager: Optional[GameManager] = None
-
-async def get_game_manager(
-    redis: RedisService = Depends(get_redis),
-    websocket_manager: WebSocketManager = Depends(get_websocket_manager),
-    ai_service: AiService = Depends(get_ai_service),
-) -> GameManager:
-    """Get the game manager instance"""
-    global _game_manager
-    if _game_manager is None:
-        await _startup_game_manager(redis, websocket_manager, ai_service)
-    return _game_manager
-
-
-async def _startup_game_manager(
-    redis: RedisService,
-    websocket_manager: WebSocketManager,
-    ai_service: AiService,
-):
-    """Initialize game manager on startup"""
-    global _game_manager
-    if _game_manager is None:
-        _game_manager = GameManager(redis, websocket_manager, ai_service)
-    await _game_manager.startup()
-    logger.info("Game Manager initialized")
-
-
-async def shutdown_game_manager():
-    """Cleanup game manager on shutdown"""
-    global _game_manager
-    if _game_manager:
-        await _game_manager.shutdown()
-        _game_manager = None
-        logger.info("Game Manager shutdown complete")

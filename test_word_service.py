@@ -7,50 +7,58 @@ from src.core.services.word_service import WordService
 
 class TestWordService(unittest.IsolatedAsyncioTestCase):
     async def test_get_random_word_with_mock_session(self):
-        # Mock session execution
         mock_session = AsyncMock()
 
-        # Mock max_id result
-        max_id_res = MagicMock()
-        max_id_res.one_or_none.return_value = 10
-
-        # Mock word result
         mock_word = Word(
             id="uuid-1",
             random_id=5,
-            word="test",
+            word="TEST",
             word_length=4,
             is_active=True,
         )
         word_res = MagicMock()
-        word_res.first.return_value = mock_word
+        word_res.all.return_value = [mock_word]
 
-        # Set side effects for session.exec calls
-        mock_session.exec.side_effect = [max_id_res, word_res]
+        mock_session.exec.return_value = word_res
 
         service = WordService(mock_session)
-        result = await service.get_random(length=4)
+        result = await service.get_random(length=4, count=1)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.word, "test")
-        self.assertEqual(result.word_length, 4)
-        self.assertEqual(mock_session.exec.call_count, 2)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].word, "TEST")
+        self.assertEqual(result[0].word_length, 4)
 
-    async def test_get_random_word_none_when_empty(self):
+    async def test_get_random_words_multiple(self):
         mock_session = AsyncMock()
 
-        max_id_res = MagicMock()
-        max_id_res.one_or_none.return_value = None
+        mock_words = [
+            Word(id="uuid-1", word="TEST", word_length=4, is_active=True),
+            Word(id="uuid-2", word="WORD", word_length=4, is_active=True),
+        ]
+        word_res = MagicMock()
+        word_res.all.return_value = mock_words
 
-        fallback_res = MagicMock()
-        fallback_res.first.return_value = None
-
-        mock_session.exec.side_effect = [max_id_res, fallback_res]
+        mock_session.exec.return_value = word_res
 
         service = WordService(mock_session)
-        result = await service.get_random(length=4)
+        result = await service.get_random(length=4, count=2)
 
-        self.assertIsNone(result)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].word, "TEST")
+        self.assertEqual(result[1].word, "WORD")
+
+    async def test_get_random_word_empty(self):
+        mock_session = AsyncMock()
+
+        word_res = MagicMock()
+        word_res.all.return_value = []
+
+        mock_session.exec.return_value = word_res
+
+        service = WordService(mock_session)
+        result = await service.get_random(length=4, count=5)
+
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

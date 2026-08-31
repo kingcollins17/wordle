@@ -29,10 +29,10 @@ class WebSocketManager:
             logger.error("connect requires a user_id or device_id")
             return False
 
-        uid = str(target_id)
+        uid = target_id
         try:
-            if websocket.client_state == WebSocketState.UNCONNECTED:
-                await websocket.accept()
+            
+            await websocket.accept()
 
             if uid in self.connections:
                 old_ws = self.connections[uid]
@@ -120,7 +120,7 @@ class WebSocketManager:
         return list(self.connections.keys())
 
 # Global singleton instance
-websocket_manager: Optional[WebSocketManager] = WebSocketManager()
+websocket_manager = WebSocketManager()
 
 
 def get_websocket_manager() -> WebSocketManager:

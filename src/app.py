@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 import logging
 
-from src.core.ai_service import AiService, get_ai_service
 from .firebase_admin_setup import *
 from src.core.api_tags import APITags
 from src.database.db_connection_manager import startup_db
@@ -16,9 +15,10 @@ from src.core.env import (
     reset_environment,
 )
 from src.game.websocket_manager import *
-from src.game.match_making_queue import matchmaking_loop
 
 from .routes import *
+
+from src.core.services.word_service import seed_initial_words
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,9 @@ async def lifespan(app: FastAPI):
         await startup_db()
         setup_firebase()
         logger.info("MySQL connection pool initialized")
+
+        # Seed initial word dictionaries (fours, fives, sixes) on startup
+        # await seed_initial_words()
 
 
     except ValueError as e:
@@ -69,7 +72,6 @@ app.include_router(lb_router)
 app.include_router(store_router)
 app.include_router(friends_router)
 app.include_router(challenges_router)
-app.include_router(lobbies_router)
 app.include_router(words_router)
 
 

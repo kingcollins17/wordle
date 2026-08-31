@@ -12,7 +12,7 @@ class Word(SQLModel, table=True):
 
     id: Optional[str] = Field(default_factory=generate_uuid, primary_key=True)
     random_id: Optional[int] = Field(default=None, index=True, unique=True)
-    word: str = Field(index=True, max_length=255)
+    word: str = Field(index=True, unique=True, max_length=255)
     meaning: Optional[str] = Field(default=None)
     word_length: int = Field(index=True)
     is_active: bool = Field(default=True)
