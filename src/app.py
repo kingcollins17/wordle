@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         logger.info("MySQL connection pool initialized")
 
         # Seed initial word dictionaries (fours, fives, sixes) on startup
-        await seed_initial_words()
+        # await seed_initial_words()
 
 
     except ValueError as e:
