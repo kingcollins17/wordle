@@ -8,6 +8,7 @@ annotated-types==0.8.0
 anyio==4.14.2
 asyncmy==0.2.14
 attrs==26.1.0
+black==26.5.1
 CacheControl==0.14.4
 certifi==2026.7.22
 cffi==2.1.1
@@ -49,6 +50,10 @@ MarkupSafe==3.0.3
 mdurl==0.1.2
 msgpack==1.2.2
 multidict==6.7.1
+mypy_extensions==1.1.0
+packaging==26.3
+pathspec==1.1.1
+platformdirs==4.11.5
 propcache==0.5.2
 proto-plus==1.28.4
 protobuf==7.36.0
@@ -64,6 +69,7 @@ PyJWT==2.13.0
 PyMySQL==1.2.0
 python-dotenv==1.2.3
 python-multipart==0.0.32
+pytokens==0.4.1
 PyYAML==6.0.3
 redis==8.1.0
 requests==2.34.2
