@@ -84,10 +84,6 @@ class Game(SQLModel, table=True):
         default=1,
         description="Total number of rounds scheduled for this game match",
     )
-    is_infinite: bool = Field(
-        default=False,
-        description="Flag indicating if the game mode is set to infinite rounds",
-    )
     max_attempts: int = Field(
         default=6,
         description="Maximum allowed guess attempts per player for each word/round",

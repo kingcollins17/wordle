@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any
 import logging
+import os
 
 from .firebase_admin_setup import *
 from src.core.api_tags import APITags
@@ -73,6 +75,10 @@ app.include_router(store_router)
 app.include_router(friends_router)
 app.include_router(challenges_router)
 app.include_router(words_router)
+
+well_known_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".well-known"))
+os.makedirs(well_known_dir, exist_ok=True)
+app.mount("/.well-known", StaticFiles(directory=well_known_dir), name="well-known")
 
 
 

@@ -120,7 +120,7 @@ class DBConnectionManager:
 _mysql_manager: Optional[DBConnectionManager] = None
 
 
-def get_mysql_manager(env: Environment=APP_CONFIG) -> DBConnectionManager:
+def get_mysql_manager(env: Environment=Depends(get_env)) -> DBConnectionManager:
     global _mysql_manager
     if _mysql_manager is None:
         _mysql_manager = DBConnectionManager(env)
