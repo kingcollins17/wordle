@@ -30,11 +30,11 @@ class CreateUserRequest(BaseModel):
     avatar: Optional[str] = None
 
 
-@auth_router.post("/", response_model=BaseResponse, status_code=status.HTTP_201_CREATED)
+@auth_router.post("/", response_model=BaseResponse[User], status_code=status.HTTP_201_CREATED)
 async def create_user(
     request: CreateUserRequest,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[User]:
     # Check for existing username if provided
     if request.username:
         existing = await repo.get(options=QueryOptions(filters={"username": request.username}))
@@ -64,12 +64,12 @@ class UpdateUserRequest(BaseModel):
     avatar: Optional[str] = Field(None)
 
 
-@auth_router.put("/update-profile/{user_id}", response_model=BaseResponse)
+@auth_router.put("/update-profile/{user_id}", response_model=BaseResponse[User])
 async def update_user_profile(
     user_id: str,
     request: UpdateUserRequest,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[User]:
     try:
         user = await repo.get(id=user_id)
         if not user:
@@ -103,12 +103,12 @@ class _ConsumerPowerupRequest(BaseModel):
     word_meaning: int = 0
 
 
-@auth_router.post("/consume-powerups/{user_id}", response_model=BaseResponse)
+@auth_router.post("/consume-powerups/{user_id}", response_model=BaseResponse[User])
 async def consume_power_ups(
     user_id: str,
     payload: _ConsumerPowerupRequest,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[User]:
     """
     Consume (decrement) powerups that were used while playing the game.
     """
@@ -163,12 +163,18 @@ def _calculate_earned_xp(score: int) -> int:
     return min(xp, 1000)
 
 
-@auth_router.get("/add-offline-earned-xp/{user_id}", response_model=BaseResponse)
+class OfflineEarnedXpResponse(BaseModel):
+    user: User
+    earned_xp: int
+    total_xp: int
+
+
+@auth_router.get("/add-offline-earned-xp/{user_id}", response_model=BaseResponse[OfflineEarnedXpResponse])
 async def add_offline_earned_xp(
     user_id: str,
     score: int,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[OfflineEarnedXpResponse]:
     """
     Add XP earned from an offline game based on the given score.
     """
@@ -185,11 +191,11 @@ async def add_offline_earned_xp(
         return BaseResponse(
             success=True,
             message="XP updated successfully",
-            data={
-                "user": updated_user,
-                "earned_xp": earned_xp,
-                "total_xp": new_xp,
-            },
+            data=OfflineEarnedXpResponse(
+                user=updated_user,
+                earned_xp=earned_xp,
+                total_xp=new_xp,
+            ),
         )
 
     except HTTPException:
@@ -198,14 +204,16 @@ async def add_offline_earned_xp(
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
 
-@auth_router.get("/by-id/{user_id}", response_model=BaseResponse)
+
+
+
+@auth_router.get("/by-id/{user_id}", response_model=BaseResponse[User])
 async def get_user_by_id(
     user_id: str,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
-    start_time = time.monotonic()
+) -> BaseResponse[User]:
     user = await repo.get(id=user_id)
-    elapsed = time.monotonic() - start_time
+   
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -213,16 +221,16 @@ async def get_user_by_id(
     return BaseResponse(
         success=True,
         message="User fetched successfully",
-        data={"user": user, "query_time_seconds": round(elapsed, 6)},
+        data=user,
     )
 
 
-@auth_router.get("/update-reg-token/{user_id}", response_model=BaseResponse)
+@auth_router.get("/update-reg-token/{user_id}", response_model=BaseResponse[User])
 async def update_device_reg_token(
     user_id: str,
     device_reg_token: str,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[User]:
     try:
         if not device_reg_token:
             raise HTTPException(status_code=400, detail="device_reg_token is required")
@@ -245,13 +253,18 @@ async def update_device_reg_token(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@auth_router.get("/list-users", response_model=BaseResponse)
+class UserListResponse(BaseModel):
+    users: List[User]
+    query_time_seconds: float
+
+
+@auth_router.get("/list-users", response_model=BaseResponse[UserListResponse])
 async def list_users(
     q: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
     repo: Repository[User] = Depends(GetRepository(User)),
-):
+) -> BaseResponse[UserListResponse]:
     """
     Search for users by username or list all users paginated.
     """
@@ -273,5 +286,5 @@ async def list_users(
     return BaseResponse(
         success=True,
         message="Users fetched successfully",
-        data={"users": users, "query_time_seconds": round(elapsed, 6)},
+        data=UserListResponse(users=users, query_time_seconds=round(elapsed, 6)),
     )
