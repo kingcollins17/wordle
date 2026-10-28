@@ -41,6 +41,9 @@ async def lifespan(app: FastAPI):
         setup_firebase()
         logger.info("MySQL connection pool initialized")
 
+        # Start WebSocket message cache cleanup background task
+        websocket_manager.start_cleanup_task()
+
         # Seed initial word dictionaries (fours, fives, sixes) on startup
         # await seed_initial_words()
 
@@ -56,8 +59,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     try:
-
-        pass
+        await websocket_manager.stop_cleanup_task()
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
 

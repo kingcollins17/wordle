@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 from typing import List, Optional
@@ -354,8 +355,16 @@ async def game_updates_websocket(
 
     try:
         while True:
-            # Hold the connection open and listen for client messages / pings
-            await websocket.receive_text()
+            # Hold the connection open and listen for client messages / pings / acks
+            raw_message = await websocket.receive_text()
+            try:
+                data = json.loads(raw_message)
+                if isinstance(data, dict):
+                    message_id = data.get("id") or data.get("message_id")
+                    if message_id:
+                        ws_manager.remove_message_from_cache(user_id=user_id, message_id=message_id)
+            except Exception:
+                pass
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected for user_id: {user_id}")
     except Exception as e:

@@ -1,4 +1,5 @@
 from src.core.utils.time import get_current_time
+from src.core.utils import generate_uuid
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -87,9 +88,17 @@ class GameManager:
             "winner_id": game.winner_id,
         }
 
-    async def _broadcast(self, game: Game, event_type: GameEventType, payload: dict | None = None) -> GameEvent:
+    async def _broadcast(
+        self,
+        game: Game,
+        event_type: GameEventType,
+        payload: dict | None = None,
+        message_id: Optional[str] = None,
+    ) -> GameEvent:
         """Build a GameEvent, broadcast to both players, and return it."""
+        event_id = message_id or generate_uuid()
         event = GameEvent(
+            id=event_id,
             event_type=event_type,
             game_state=self._game_to_dict(game),
             payload=payload,
@@ -97,7 +106,7 @@ class GameManager:
         player_ids = [game.player_1]
         if game.player_2:
             player_ids.append(game.player_2)
-        await self.ws.broadcast(event, user_ids=player_ids)
+        await self.ws.broadcast(event.model_dump(), user_ids=player_ids)
         return event
 
     def _get_player_attrs(self, game: Game, player_id: str) -> tuple[str, str]:
@@ -197,8 +206,9 @@ class GameManager:
             event_type = GameEventType.GUESS_MADE
             payload = {"guess": guess, "guess_result": result.model_dump()}
 
+        message_id = generate_uuid()
         await self._save(game)
-        return await self._broadcast(game, event_type, payload)
+        return await self._broadcast(game, event_type, payload, message_id=message_id)
 
     def _reset_round_state(self, game: Game) -> None:
         """Reset all round gameplay and powerup tracking state for both players when advancing rounds."""
@@ -331,8 +341,9 @@ class GameManager:
         player_prefix, opponent_prefix = self._get_player_attrs(game, player_id)
         secret_word = self._get_secret_word(game, opponent_prefix)
 
+        message_id = generate_uuid()
         # Apply effect
-        result = PowerUpUsageResult(powerup_type=powerup_type)
+        result = PowerUpUsageResult(id=message_id, powerup_type=powerup_type)
 
         if powerup_type == PowerUpType.FISH_OUT:
             attr_name = f"{player_prefix}_fish_outs"
@@ -374,7 +385,7 @@ class GameManager:
             result.word_meaning = meanings[upper_word]
 
         await self._save(game)
-        await self._broadcast(game, GameEventType.POWERUP_USED, result.model_dump())
+        await self._broadcast(game, GameEventType.POWERUP_USED, result.model_dump(), message_id=message_id)
         return result
 
     async def pause_game(self, player_id: str) -> GameEvent:

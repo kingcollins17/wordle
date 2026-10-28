@@ -9,6 +9,7 @@ from src.game.game_algorithm import PowerUpType
 
 class PowerUpUsageResult(BaseModel):
     """Result returned when a player uses a power-up."""
+    id: Optional[str] = None
     powerup_type: PowerUpType
     fished_letter: Optional[str] = None
     revealed_letter: Optional[str] = None
@@ -38,6 +39,7 @@ class GameEvent(BaseModel):
     Carries the event type, a dict snapshot of the current Game state,
     and an optional event-specific payload.
     """
+    id: Optional[str] = None
     event_type: GameEventType
     game_state: dict
     payload: Optional[Any] = None
