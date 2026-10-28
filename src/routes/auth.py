@@ -7,39 +7,34 @@ from src.core import BaseResponse, APITags, QueryOptions
 from src.core.models.user import User
 from src.core.repository import Repository, GetRepository
 
+from src.core.services.reward_service import RewardService, get_reward_service
+
 auth_router = APIRouter(prefix="/users", tags=[APITags.USERS])
-
-
-async def get_current_user(
-    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
-    user_id: Optional[str] = Header(None, alias="user-id"),
-    repo: Repository[User] = Depends(GetRepository(User)),
-) -> User:
-    uid = x_user_id or user_id
-    if not uid:
-        raise HTTPException(status_code=401, detail="User ID header required (X-User-ID or user-id)")
-    user = await repo.get(id=uid)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
 
 # Request body schema for user creation
 class CreateUserRequest(BaseModel):
     username: Optional[str] = Field(None, max_length=255)
     avatar: Optional[str] = None
+    referral_code: Optional[str] = None
 
 
 @auth_router.post("/", response_model=BaseResponse[User], status_code=status.HTTP_201_CREATED)
 async def create_user(
     request: CreateUserRequest,
     repo: Repository[User] = Depends(GetRepository(User)),
+    reward_service: RewardService = Depends(get_reward_service),
 ) -> BaseResponse[User]:
     # Check for existing username if provided
     if request.username:
         existing = await repo.get(options=QueryOptions(filters={"username": request.username}))
         if existing:
             raise HTTPException(status_code=400, detail="Username already taken")
+
+    referrer = None
+    if request.referral_code:
+        referrer = await repo.get(options=QueryOptions(filters={"referral_code": request.referral_code.strip()}))
+        if not referrer:
+            raise HTTPException(status_code=400, detail="Invalid referral code")
 
     user_entity = User(
         # pyrefly: ignore [bad-argument-type]
@@ -48,15 +43,25 @@ async def create_user(
         xp=10,
         coins=500,
         games_played=0,
+        referrer_id=referrer.id if referrer else None,
     )
 
     created_user = await repo.add(user_entity)
+
+    if referrer:
+        await reward_service.reward(
+            user_id=referrer.id,
+            coins=100,
+            title="Referral Bonus",
+            description=f"Reward for referring {created_user.username or 'a new user'}",
+        )
 
     return BaseResponse(
         success=True,
         message="User created successfully",
         data=created_user,
     )
+
 
 
 class UpdateUserRequest(BaseModel):

@@ -8,7 +8,7 @@ from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.models.user import User
 from src.core.repository import Repository, GetRepository
-from src.routes.auth import get_current_user
+from src.core.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 

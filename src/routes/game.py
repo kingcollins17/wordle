@@ -2,7 +2,7 @@ import logging
 import random
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -20,7 +20,7 @@ from src.game.game_algorithm import PowerUpType
 from src.game.game_events import GameEvent, PowerUpUsageResult
 from src.game.game_manager import GameError, GameManager, GetGameManager
 from src.game.websocket_manager import WebSocketManager, get_websocket_manager
-from src.routes.auth import get_current_user
+from src.core.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -313,3 +313,54 @@ async def quit_game(
         return BaseResponse(message="Game quit successfully", data=event)
     except GameError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@game_router.post("/switch-turn/{game_id}", response_model=BaseResponse[GameEvent])
+@game_router.post("/switch_turn/{game_id}", response_model=BaseResponse[GameEvent], include_in_schema=False)
+async def switch_turn(
+    game_id: str,
+    user: User = Depends(get_current_user),
+    game_manager: GameManager = Depends(GetGameManager()),
+):
+    """
+    Switch player turn when the turn timer on the client hits zero.
+    If switching turn in the last round and the last active player was player 2,
+    the game is finalized as Game Over.
+    """
+    try:
+        event = await game_manager.switch_player_turn(player_id=user.id)
+        return BaseResponse(message="Turn switched successfully", data=event)
+    except (GameError, AssertionError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── WebSocket Updates Endpoint ────────────────────────────────────────────────
+
+
+@game_router.websocket("/ws")
+@game_router.websocket("/updates")
+async def game_updates_websocket(
+    websocket: WebSocket,
+    user_id: str = Query(..., description="User ID of the connecting player"),
+    ws_manager: WebSocketManager = Depends(get_websocket_manager),
+):
+    """
+    WebSocket endpoint for receiving game updates broadcasted via WebSocketManager.
+    Connects the user via their user_id query parameter and maintains the connection.
+    """
+    connected = await ws_manager.connect(websocket, user_id=user_id)
+    if not connected:
+        return
+
+    try:
+        while True:
+            # Hold the connection open and listen for client messages / pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket client disconnected for user_id: {user_id}")
+    except Exception as e:
+        logger.warning(f"WebSocket connection error for user_id {user_id}: {e}")
+    finally:
+        await ws_manager.disconnect(user_id=user_id, reason="Connection closed")
+
+

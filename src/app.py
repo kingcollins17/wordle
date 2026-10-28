@@ -72,9 +72,9 @@ app.include_router(auth_router)
 app.include_router(game_router)
 app.include_router(lb_router)
 app.include_router(store_router)
-app.include_router(friends_router)
-app.include_router(challenges_router)
 app.include_router(words_router)
+app.include_router(rewards_router)
+
 
 well_known_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".well-known"))
 os.makedirs(well_known_dir, exist_ok=True)
@@ -90,4 +90,5 @@ async def health_check(
 
     return {
         "status": "healthy",
+        "ws": "https://domain/game/ws?user_id=<USERID>"
     }

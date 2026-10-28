@@ -14,3 +14,4 @@ class APITags:
     FRIENDS = "Friends"
 
     CHALLENGES = "Challenges"
+    REWARDS = "Rewards"

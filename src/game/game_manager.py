@@ -218,7 +218,7 @@ class GameManager:
         """
         if game.current_turn == Player.p1:
             game.current_turn = Player.p2
-            return GameEventType.TURN_CHANGED, {
+            return GameEventType.TURN_WON, {
                 "won_by": player_id,
                 "current_turn": Player.p2.value,
             }
@@ -230,7 +230,7 @@ class GameManager:
                 game.current_round += 1
                 game.current_turn = Player.p1
                 self._reset_round_state(game)
-                return GameEventType.ROUND_ENDED, {
+                return GameEventType.TURN_WON, {
                     "won_by": player_id,
                     "new_round": game.current_round,
                 }
@@ -249,7 +249,9 @@ class GameManager:
         else:
             is_last_round = game.current_round >= game.total_rounds
             if is_last_round:
-                return self._finalize_game(game)
+                event_type, payload = self._finalize_game(game)
+                payload["lost_by"] = player_id
+                return event_type, payload
             else:
                 game.current_round += 1
                 game.current_turn = Player.p1
@@ -276,11 +278,28 @@ class GameManager:
 
         return GameEventType.GAME_OVER, {
             "winner_id": game.winner_id,
+            "draw": game.winner_id is None,
             "reason": reason,
             "player_1_score": game.player_1_score,
             "player_2_score": game.player_2_score,
         }
 
+    async def switch_player_turn(self, player_id: Optional[str] = None) -> GameEvent:
+        game: Game = await self._get_game()
+        self._validate_in_progress(game)
+        if player_id:
+            self._get_player_attrs(game, player_id)
+
+        current_turn = game.current_turn
+        assert current_turn is not None, 'current_turn must not be None'
+        assert game.player_1 and game.player_2, f'Game {self.game_id} must have both players joined'
+
+        event_type, payload = self._handle_turn_lost(game, game.player_1 if current_turn == Player.p1 else game.player_2)
+
+        await self._save(game)
+        return await self._broadcast(game, event_type, payload)
+
+        
     async def use_powerup(self, player_id: str, powerup_type: PowerUpType) -> PowerUpUsageResult:
         """
         Use a power-up. Decrements the user's count in the User table
