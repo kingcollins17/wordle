@@ -208,6 +208,8 @@ class GameManager:
 
         message_id = generate_uuid()
         await self._save(game)
+        if event_type == GameEventType.GAME_OVER:
+            await self.fulfill_rewards(payload, game)
         return await self._broadcast(game, event_type, payload, message_id=message_id)
 
     def _reset_round_state(self, game: Game) -> None:
@@ -271,8 +273,139 @@ class GameManager:
                     "new_round": game.current_round,
                 }
 
+    def _calculate_player_rewards(
+        self,
+        is_winner: bool,
+        is_draw: bool,
+        score: int,
+        opponent_score: int,
+        attempts: Optional[list],
+        total_rounds: int,
+        max_attempts: int,
+    ) -> dict:
+        """
+        Calculate rewards for an individual player.
+        - Coins: capped strictly between 10 and 120.
+        - Takes into account winner status, attempts, rounds, and scores.
+        - Grants 1 powerup (fish_out, reveal_letter, or word_meaning) if performance is exceptional.
+        - Calculates XP boost according to performance.
+        """
+        if is_winner:
+            base_coins = 50
+            base_xp = 50
+        elif is_draw:
+            base_coins = 30
+            base_xp = 30
+        else:
+            base_coins = 15
+            base_xp = 15
+
+        attempts_list = attempts or []
+        attempts_count = len(attempts_list)
+
+        # Attempt efficiency bonus: fewer attempts => higher bonus
+        if attempts_count > 0:
+            attempt_bonus = max(0, (max_attempts - attempts_count + 1) * 5)
+            attempt_xp = max(0, (max_attempts - attempts_count + 1) * 5)
+        else:
+            attempt_bonus = 0
+            attempt_xp = 0
+
+        # Rounds and score bonuses
+        score_bonus = score * 15
+        rounds_bonus = min(total_rounds * 5, 20)
+        score_xp = score * 20
+        rounds_xp = min(total_rounds * 5, 20)
+
+        # Exceptional performance criteria:
+        # 1. Clean sweep/shutout win (opponent scored 0, player scored >= 1)
+        # 2. Solved in 3 or fewer attempts (or half max_attempts)
+        # 3. Won every round in a multi-round match
+        # 4. First-guess solve (ace)
+        is_exceptional = False
+        if is_winner and (opponent_score == 0 and score > 0):
+            is_exceptional = True
+        elif attempts_count > 0 and attempts_count <= max(2, max_attempts // 2) and (score > 0 or is_winner):
+            is_exceptional = True
+        elif is_winner and total_rounds > 1 and score >= total_rounds:
+            is_exceptional = True
+        elif attempts_count == 1:
+            is_exceptional = True
+
+        awarded_powerup: Optional[str] = None
+        exceptional_coins = 0
+        exceptional_xp = 0
+
+        if is_exceptional:
+            # Select one of the three power-ups: fish_out, reveal_letter, word_meaning
+            powerup_choices = ["fish_out", "reveal_letter", "word_meaning"]
+            idx = (score + attempts_count) % len(powerup_choices)
+            awarded_powerup = powerup_choices[idx]
+            exceptional_coins = 15
+            exceptional_xp = 30
+
+        # Total coins capped strictly from 10 to 120
+        raw_coins = base_coins + score_bonus + attempt_bonus + rounds_bonus + exceptional_coins
+        coins = max(10, min(120, raw_coins))
+
+        # Total XP
+        raw_xp = base_xp + score_xp + attempt_xp + rounds_xp + exceptional_xp
+        xp = max(10, raw_xp)
+
+        fish_out = 1 if awarded_powerup == "fish_out" else 0
+        reveal_letter = 1 if awarded_powerup == "reveal_letter" else 0
+        word_meaning = 1 if awarded_powerup == "word_meaning" else 0
+
+        return {
+            "coins": coins,
+            "xp": xp,
+            "fish_out": fish_out,
+            "reveal_letter": reveal_letter,
+            "word_meaning": word_meaning,
+            "powerup": awarded_powerup,
+            "exceptional": is_exceptional,
+        }
+
+    def _calculate_game_rewards(self, game: Game) -> dict:
+        """
+        Calculate game rewards for both players based on final game outcome.
+        Returns dict containing player_1_coins, player_2_fishouts, etc.
+        """
+        is_draw = game.winner_id is None
+        p1_winner = (game.winner_id == game.player_1) if not is_draw else False
+        p2_winner = (game.winner_id == game.player_2) if not is_draw and game.player_2 else False
+
+        p1_rewards = self._calculate_player_rewards(
+            is_winner=p1_winner,
+            is_draw=is_draw,
+            score=game.player_1_score,
+            opponent_score=game.player_2_score if game.player_2 else 0,
+            attempts=game.player_1_attempts,
+            total_rounds=game.total_rounds,
+            max_attempts=game.max_attempts,
+        )
+
+        p2_rewards = (
+            self._calculate_player_rewards(
+                is_winner=p2_winner,
+                is_draw=is_draw,
+                score=game.player_2_score,
+                opponent_score=game.player_1_score,
+                attempts=game.player_2_attempts,
+                total_rounds=game.total_rounds,
+                max_attempts=game.max_attempts,
+            )
+            if game.player_2
+            else None
+        )
+
+        return {
+            "player_1": p1_rewards,
+            "player_2": p2_rewards,
+        }
+
     def _finalize_game(self, game: Game) -> tuple[GameEventType, dict]:
-        """Determine winner by score and mark game as over."""
+        """Determine winner by score, calculate rewards, and mark game as over."""
         game.status = GameStatus.GAME_OVER
         game.completed_at = get_current_time()
 
@@ -286,13 +419,90 @@ class GameManager:
             game.winner_id = None
             reason = f"Draw at {game.player_1_score}-{game.player_2_score}"
 
-        return GameEventType.GAME_OVER, {
+        rewards = self._calculate_game_rewards(game)
+
+        payload = {
             "winner_id": game.winner_id,
             "draw": game.winner_id is None,
             "reason": reason,
             "player_1_score": game.player_1_score,
             "player_2_score": game.player_2_score,
+            "rewards": rewards,
         }
+
+        return GameEventType.GAME_OVER, payload
+
+    async def fulfill_rewards(
+        self,
+        rewards: Optional[dict] = None,
+        game: Optional[Game] = None,
+    ) -> dict:
+        """
+        Fulfill game rewards by updating User records in the database.
+        Increments user.coins, user.xp, user.games_played, and power-up counts
+        (user.fish_out, user.reveal_letter, user.word_meaning) where appropriate.
+        """
+        if game is None:
+            game = await self._get_game()
+
+        if rewards is None:
+            rewards = self._calculate_game_rewards(game)
+
+        if "rewards" in rewards and isinstance(rewards["rewards"], dict):
+            rewards = rewards["rewards"]
+
+        updated_users = {}
+        player_mappings = [
+            ("player_1", game.player_1),
+            ("player_2", game.player_2),
+        ]
+
+        for prefix, user_id in player_mappings:
+            if not user_id:
+                continue
+
+            user = await self.user_repo.get(id=user_id)
+            if not user:
+                logger.warning("Cannot fulfill rewards: User %s not found", user_id)
+                continue
+
+            player_rewards = rewards.get(prefix)
+            if not isinstance(player_rewards, dict):
+                continue
+
+            coins = player_rewards.get("coins", 0)
+            xp = player_rewards.get("xp", 0)
+            fish_out = player_rewards.get("fish_out", 0)
+            reveal_letter = player_rewards.get("reveal_letter", 0)
+            word_meaning = player_rewards.get("word_meaning", 0)
+
+            updates = {
+                "coins": (user.coins or 0) + coins,
+                "xp": (user.xp or 0) + xp,
+                "games_played": (user.games_played or 0) + 1,
+            }
+            if fish_out:
+                updates["fish_out"] = (user.fish_out or 0) + fish_out
+            if reveal_letter:
+                updates["reveal_letter"] = (user.reveal_letter or 0) + reveal_letter
+            if word_meaning:
+                updates["word_meaning"] = (user.word_meaning or 0) + word_meaning
+
+            updated_user = await self.user_repo.update(user, updates)
+            updated_users[user_id] = updated_user
+            logger.warning(
+                "Fulfilled rewards for user %s: +%s coins, +%s xp, fish_out=%s, reveal=%s, meaning=%s",
+                user_id,
+                coins,
+                xp,
+                fish_out,
+                reveal_letter,
+                word_meaning,
+            )
+
+        return updated_users
+
+    
 
     async def switch_player_turn(self, player_id: Optional[str] = None) -> GameEvent:
         game: Game = await self._get_game()
@@ -307,6 +517,8 @@ class GameManager:
         event_type, payload = self._handle_turn_lost(game, game.player_1 if current_turn == Player.p1 else game.player_2)
 
         await self._save(game)
+        if event_type == GameEventType.GAME_OVER:
+            await self.fulfill_rewards(payload, game)
         return await self._broadcast(game, event_type, payload)
 
         
@@ -419,6 +631,7 @@ class GameManager:
         payload["reason"] = reason
 
         await self._save(game)
+        await self.fulfill_rewards(payload, game)
         return await self._broadcast(game, event_type, payload)
 
 
