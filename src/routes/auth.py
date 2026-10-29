@@ -1,11 +1,12 @@
 from typing import Optional, List
 import time
 from fastapi import APIRouter, Depends, HTTPException, Header, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.core import BaseResponse, APITags, QueryOptions
 from src.core.models.user import User
 from src.core.repository import Repository, GetRepository
+from src.core.dependencies import get_current_user
 
 from src.core.services.reward_service import RewardService, get_reward_service
 
@@ -102,30 +103,36 @@ async def update_user_profile(
         raise HTTPException(status_code=500, detail=f"{e}")
 
 
-class _ConsumerPowerupRequest(BaseModel):
-    fish_out: int = 0
-    reveal_letter: int = 0
-    word_meaning: int = 0
+class SyncOfflineUsageRequest(BaseModel):
+    fish_out: int = Field(default=0, ge=0)
+    reveal_letter: int = Field(default=0, ge=0)
+    word_meaning: int = Field(default=0, ge=0)
+    coins_earned: int = Field(default=0, ge=0)
+    xp_earned: int = Field(default=0, ge=0)
 
 
-@auth_router.post("/consume-powerups/{user_id}", response_model=BaseResponse[User])
-async def consume_power_ups(
-    user_id: str,
-    payload: _ConsumerPowerupRequest,
+_ConsumerPowerupRequest = SyncOfflineUsageRequest
+
+
+@auth_router.post("/sync-offline-usage", response_model=BaseResponse[User])
+async def sync_offline_usage(
+    payload: SyncOfflineUsageRequest,
+    current_user: User = Depends(get_current_user),
     repo: Repository[User] = Depends(GetRepository(User)),
 ) -> BaseResponse[User]:
     """
-    Consume (decrement) powerups that were used while playing the game.
+    Sync offline gameplay usage:
+    - Deduct powerups consumed during offline play.
+    - Add coins and XP earned during offline play.
     """
     try:
-        user = await repo.get(id=user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
         updates = {}
-        for field, decrement_by in payload.model_dump(exclude_none=True).items():
+
+        # Deduct powerups
+        for field in ("fish_out", "reveal_letter", "word_meaning"):
+            decrement_by = getattr(payload, field, 0)
             if decrement_by > 0:
-                current_value = getattr(user, field, 0)
+                current_value = getattr(current_user, field, 0) or 0
                 if current_value < decrement_by:
                     raise HTTPException(
                         status_code=400,
@@ -133,16 +140,21 @@ async def consume_power_ups(
                     )
                 updates[field] = current_value - decrement_by
 
-        if not updates:
-            raise HTTPException(
-                status_code=400, detail="No valid powerup consumption data"
-            )
+        # Add earned rewards
+        if payload.coins_earned > 0:
+            updates["coins"] = (current_user.coins or 0) + payload.coins_earned
 
-        updated_user = await repo.update(user, updates)
+        if payload.xp_earned > 0:
+            updates["xp"] = (current_user.xp or 0) + payload.xp_earned
+
+        if updates:
+            updated_user = await repo.update(current_user, updates)
+        else:
+            updated_user = current_user
 
         return BaseResponse(
             success=True,
-            message="Powerups updated successfully",
+            message="Offline usage synced successfully",
             data=updated_user,
         )
 
@@ -152,65 +164,44 @@ async def consume_power_ups(
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
 
-def _calculate_earned_xp(score: int) -> int:
-    if score <= 0:
-        return 0
+class ClaimDailyBonusRequest(BaseModel):
+    amount: Optional[int] = Field(default=None, ge=1, description="Amount of coins to claim as daily bonus")
+    coins: Optional[int] = Field(default=None, ge=1, description="Alias for amount of coins")
 
-    base_xp = 10
-
-    if score <= 100:
-        xp = base_xp + int(score * 0.5)
-    elif score <= 500:
-        xp = base_xp + int(100 * 0.5 + (score - 100) * 0.25)
-    else:
-        xp = base_xp + int(100 * 0.5 + 400 * 0.25 + (score - 500) * 0.1)
-
-    return min(xp, 1000)
+    @model_validator(mode="after")
+    def validate_bonus_amount(self):
+        if self.amount is None and self.coins is None:
+            raise ValueError("Bonus coin amount is required and must be greater than 0")
+        if self.amount is None and self.coins is not None:
+            self.amount = self.coins
+        return self
 
 
-class OfflineEarnedXpResponse(BaseModel):
-    user: User
-    earned_xp: int
-    total_xp: int
-
-
-@auth_router.get("/add-offline-earned-xp/{user_id}", response_model=BaseResponse[OfflineEarnedXpResponse])
-async def add_offline_earned_xp(
-    user_id: str,
-    score: int,
+@auth_router.post("/claim-daily-bonus", response_model=BaseResponse[User])
+@auth_router.post("/daily-bonus", response_model=BaseResponse[User])
+async def claim_daily_bonus(
+    payload: ClaimDailyBonusRequest,
+    current_user: User = Depends(get_current_user),
     repo: Repository[User] = Depends(GetRepository(User)),
-) -> BaseResponse[OfflineEarnedXpResponse]:
+) -> BaseResponse[User]:
     """
-    Add XP earned from an offline game based on the given score.
+    Claim daily bonus and increment user's coins based on client-specified amount.
     """
     try:
-        user = await repo.get(id=user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+        bonus_coins = payload.amount or 0
+        new_coins = (current_user.coins or 0) + bonus_coins
 
-        earned_xp = _calculate_earned_xp(score)
-        new_xp = user.xp + earned_xp
-
-        updated_user = await repo.update(user, {"xp": new_xp})
+        updated_user = await repo.update(current_user, {"coins": new_coins})
 
         return BaseResponse(
             success=True,
-            message="XP updated successfully",
-            data=OfflineEarnedXpResponse(
-                user=updated_user,
-                earned_xp=earned_xp,
-                total_xp=new_xp,
-            ),
+            message=f"Daily bonus of {bonus_coins} coins claimed successfully",
+            data=updated_user,
         )
-
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
-
-
-
-
 
 @auth_router.get("/by-id/{user_id}", response_model=BaseResponse[User])
 async def get_user_by_id(
