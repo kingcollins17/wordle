@@ -31,15 +31,15 @@ powerup_word_meaning = "word_meaning"
 powerup_reveal_letter = "reveal_letter"
 
 product_powerups = {
-    powerup_fish_out: {"price": 150, "quantity": 1},
-    powerup_word_meaning: {"price": 200, "quantity": 1},
-    powerup_reveal_letter: {"price": 250, "quantity": 1},
-    "fish_out_pack_10": {"price": 1200, "quantity": 10},
-    "word_meaning_pack_10": {"price": 1600, "quantity": 10},
-    "reveal_letter_pack_10": {"price": 2000, "quantity": 10},
-    "fish_out_pack_25": {"price": 2800, "quantity": 25},
-    "word_meaning_pack_25": {"price": 4000, "quantity": 25},
-    "reveal_letter_pack_25": {"price": 5000, "quantity": 25},
+    powerup_reveal_letter: {"price": 500, "quantity": 1},
+    powerup_fish_out: {"price": 800, "quantity": 1},
+    powerup_word_meaning: {"price": 1200, "quantity": 1},
+    "reveal_letter_pack_10": {"price": 4000, "quantity": 10},
+    "fish_out_pack_10": {"price": 6400, "quantity": 10},
+    "word_meaning_pack_10": {"price": 9600, "quantity": 10},
+    "reveal_letter_pack_25": {"price": 8000, "quantity": 25},
+    "fish_out_pack_25": {"price": 13000, "quantity": 25},
+    "word_meaning_pack_25": {"price": 19500, "quantity": 25},
 }
 
 

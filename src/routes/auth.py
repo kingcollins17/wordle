@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Optional, List
 import time
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, status
 from pydantic import BaseModel, Field, model_validator
 
 from src.core import BaseResponse, APITags, QueryOptions
@@ -64,6 +65,142 @@ async def create_user(
     )
 
 
+class SyncOfflineUserRequest(BaseModel):
+    id: Optional[str] = Field(None, description="Offline client-generated user ID (UUID)")
+    user_id: Optional[str] = Field(None, description="Alias for id")
+    username: Optional[str] = Field(None, max_length=255, description="Username chosen by the user")
+    avatar: Optional[str] = Field(None, description="Avatar URL or identifier")
+    device_reg_token: Optional[str] = Field(None, description="Device push notification token")
+    xp: Optional[int] = Field(None, ge=0, description="Total XP accumulated offline")
+    coins: Optional[int] = Field(None, ge=0, description="Total coins accumulated/remaining offline")
+    games_played: Optional[int] = Field(None, ge=0, description="Total games played offline")
+    reveal_letter: Optional[int] = Field(None, ge=0, description="Reveal letter power-ups balance")
+    fish_out: Optional[int] = Field(None, ge=0, description="Fish out power-ups balance")
+    word_meaning: Optional[int] = Field(None, ge=0, description="Word meaning power-ups balance")
+    referral_code: Optional[str] = Field(None, description="Referral code of the referrer or entered on sign-up")
+    referrer_code: Optional[str] = Field(None, description="Explicit alias for referral code of the referrer")
+    user_referral_code: Optional[str] = Field(None, description="Own referral code if generated offline")
+    created_at: Optional[datetime] = Field(None, description="Original offline creation timestamp")
+
+    @model_validator(mode="after")
+    def populate_id(self):
+        if not self.id and self.user_id:
+            self.id = self.user_id
+        return self
+
+
+@auth_router.post("/sync-offline-user", response_model=BaseResponse[User], status_code=status.HTTP_201_CREATED)
+@auth_router.post("/sync-offline", response_model=BaseResponse[User], status_code=status.HTTP_201_CREATED)
+async def sync_offline_user(
+    request: SyncOfflineUserRequest,
+    response: Response,
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+    user_id_header: Optional[str] = Header(None, alias="user-id"),
+    repo: Repository[User] = Depends(GetRepository(User)),
+    reward_service: RewardService = Depends(get_reward_service),
+) -> BaseResponse[User]:
+    """
+    Sync a user created locally while offline to the backend database.
+    Handles idempotency (re-syncing with existing ID updates user stats if changed)
+    and awards referrer bonuses if a referral code is provided.
+    """
+    uid = (request.id or x_user_id or user_id_header or "").strip() or None
+
+    # Idempotent check: if user already exists by ID
+    if uid:
+        existing_user = await repo.get(id=uid)
+        if existing_user:
+            updates = {}
+            if request.username and request.username != existing_user.username:
+                user_with_name = await repo.get(options=QueryOptions(filters={"username": request.username}))
+                if user_with_name and user_with_name.id != existing_user.id:
+                    raise HTTPException(status_code=400, detail="Username already taken")
+                updates["username"] = request.username
+
+            if request.avatar and request.avatar != existing_user.avatar:
+                updates["avatar"] = request.avatar
+            if request.device_reg_token and request.device_reg_token != existing_user.device_reg_token:
+                updates["device_reg_token"] = request.device_reg_token
+            if request.xp is not None and request.xp > (existing_user.xp or 0):
+                updates["xp"] = request.xp
+            if request.coins is not None and request.coins > (existing_user.coins or 0):
+                updates["coins"] = request.coins
+            if request.games_played is not None and request.games_played > (existing_user.games_played or 0):
+                updates["games_played"] = request.games_played
+            if request.reveal_letter is not None:
+                updates["reveal_letter"] = request.reveal_letter
+            if request.fish_out is not None:
+                updates["fish_out"] = request.fish_out
+            if request.word_meaning is not None:
+                updates["word_meaning"] = request.word_meaning
+
+            if updates:
+                existing_user = await repo.update(existing_user, updates)
+
+            response.status_code = status.HTTP_200_OK
+            return BaseResponse(
+                success=True,
+                message="User already synced successfully",
+                data=existing_user,
+            )
+
+    # Check for username conflict with another user
+    if request.username:
+        user_with_name = await repo.get(options=QueryOptions(filters={"username": request.username}))
+        if user_with_name and (not uid or user_with_name.id != uid):
+            raise HTTPException(status_code=400, detail="Username already taken")
+
+    # Resolve referrer
+    referrer = None
+    ref_code = (request.referrer_code or request.referral_code or "").strip()
+    if ref_code:
+        potential_referrer = await repo.get(options=QueryOptions(filters={"referral_code": ref_code}))
+        if potential_referrer and (not uid or potential_referrer.id != uid):
+            referrer = potential_referrer
+        elif request.referrer_code:
+            raise HTTPException(status_code=400, detail="Invalid referral code")
+
+    # Build user entity
+    user_data = {
+        "username": request.username,
+        "avatar": request.avatar,
+        "device_reg_token": request.device_reg_token,
+        "xp": request.xp if request.xp is not None else 10,
+        "coins": request.coins if request.coins is not None else 500,
+        "games_played": request.games_played if request.games_played is not None else 0,
+        "reveal_letter": request.reveal_letter if request.reveal_letter is not None else 1,
+        "fish_out": request.fish_out if request.fish_out is not None else 1,
+        "word_meaning": request.word_meaning if request.word_meaning is not None else 1,
+        "referrer_id": referrer.id if referrer else None,
+    }
+    if uid:
+        user_data["id"] = uid
+    if request.user_referral_code:
+        code_exists = await repo.get(options=QueryOptions(filters={"referral_code": request.user_referral_code.strip()}))
+        if not code_exists:
+            user_data["referral_code"] = request.user_referral_code.strip()
+    if request.created_at is not None:
+        # pyrefly: ignore[bad-assignment]
+        user_data["created_at"] = request.created_at
+
+    # pyrefly: ignore[bad-argument-type]
+    user_entity = User(**user_data)
+    created_user = await repo.add(user_entity)
+
+    # Award referral bonus
+    if referrer:
+        await reward_service.reward(
+            user_id=referrer.id,
+            coins=100,
+            title="Referral Bonus",
+            description=f"Reward for referring {created_user.username or 'a new user'}",
+        )
+
+    return BaseResponse(
+        success=True,
+        message="Offline user synced successfully",
+        data=created_user,
+    )
 
 class UpdateUserRequest(BaseModel):
     username: Optional[str] = Field(None, max_length=255)
