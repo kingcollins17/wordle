@@ -199,6 +199,12 @@ class GetRepository(Generic[T]):
     def __init__(self, model: Type[T]):
         self.model = model
 
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, GetRepository) and self.model == other.model
+
+    def __hash__(self) -> int:
+        return hash((GetRepository, self.model))
+
     def __call__(
         self,
         session: AsyncSession = Depends(_get_async_session_dependency),

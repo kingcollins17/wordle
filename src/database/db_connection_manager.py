@@ -120,9 +120,12 @@ class DBConnectionManager:
 _mysql_manager: Optional[DBConnectionManager] = None
 
 
-def get_mysql_manager(env: Environment=Depends(get_env)) -> DBConnectionManager:
+def get_mysql_manager(env: Optional[Environment]=Depends(get_env)) -> DBConnectionManager:
     global _mysql_manager
     if _mysql_manager is None:
+        if env is None or not isinstance(env, Environment):
+            from ..core.env import get_env as _fetch_env
+            env = _fetch_env()
         _mysql_manager = DBConnectionManager(env)
     return _mysql_manager
 

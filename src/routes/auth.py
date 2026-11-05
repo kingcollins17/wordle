@@ -1,10 +1,13 @@
 from datetime import datetime
 from typing import Optional, List
 import time
+from urllib.parse import urlparse, parse_qs
 from fastapi import APIRouter, Depends, HTTPException, Header, Response, status
 from pydantic import BaseModel, Field, model_validator
 
 from src.core import BaseResponse, APITags, QueryOptions
+from src.core.env import Environment, get_env
+from src.core.models.reward import Reward
 from src.core.models.user import User
 from src.core.repository import Repository, GetRepository
 from src.core.dependencies import get_current_user
@@ -421,3 +424,133 @@ async def list_users(
         message="Users fetched successfully",
         data=UserListResponse(users=users, query_time_seconds=round(elapsed, 6)),
     )
+
+
+def extract_referral_code_from_url(url_str: str) -> Optional[str]:
+    """
+    Extract referral code from a URL's query parameters.
+    Checks common referral query parameters ('referral_code', 'ref', 'code', etc.).
+    """
+    if not url_str or not url_str.strip():
+        return None
+    url_str = url_str.strip()
+    parsed = urlparse(url_str)
+
+    # 1. Standard query string
+    params = parse_qs(parsed.query)
+
+    # 2. Query string in URL fragment (e.g. Flutter Web / SPA hash routing: #/path?referral_code=...)
+    if not params and parsed.fragment and "?" in parsed.fragment:
+        frag_query = parsed.fragment.split("?", 1)[1]
+        params = parse_qs(frag_query)
+
+    # 3. URL provided without scheme where query wasn't parsed into parsed.query
+    if not params and "?" in url_str:
+        raw_query = url_str.split("?", 1)[1].split("#", 1)[0]
+        params = parse_qs(raw_query)
+
+    if not params:
+        return None
+
+    # Normalize keys to lower case without underscores or hyphens
+    normalized_params = {
+        k.lower().replace("-", "").replace("_", ""): v
+        for k, v in params.items()
+    }
+
+    priority_keys = [
+        "referralcode",
+        "refcode",
+        "referral",
+        "ref",
+        "code",
+        "referrercode",
+        "referrer",
+    ]
+
+    for key in priority_keys:
+        if key in normalized_params and normalized_params[key]:
+            val = normalized_params[key][0].strip()
+            if val:
+                return val
+
+    # Fallback: if only one query parameter is present, use its value
+    if len(params) == 1:
+        val = list(params.values())[0][0].strip()
+        if val:
+            return val
+
+    return None
+
+
+class RecordReferralClickRequest(BaseModel):
+    referral_url: Optional[str] = Field(None, description="Referral URL containing referral code as query parameter")
+    referral_code: Optional[str] = Field(None, description="Direct referral code")
+    url: Optional[str] = Field(None, description="Alias for referral_url")
+    code: Optional[str] = Field(None, description="Alias for referral_code")
+
+    @model_validator(mode="after")
+    def populate_aliases(self):
+        if not self.referral_url and self.url:
+            self.referral_url = self.url
+        if not self.referral_code and self.code:
+            self.referral_code = self.code
+        return self
+
+
+@auth_router.post("/record-referral-click", response_model=BaseResponse[Reward])
+@auth_router.post("/referral-click", response_model=BaseResponse[Reward])
+@auth_router.post("/referral/click", response_model=BaseResponse[Reward])
+async def record_referral_click(
+    request: RecordReferralClickRequest,
+    repo: Repository[User] = Depends(GetRepository(User)),
+    reward_service: RewardService = Depends(get_reward_service),
+    env: Environment = Depends(get_env),
+) -> BaseResponse[Reward]:
+    """
+    Record a referral link click and reward the referral code owner with env.REFERRAL_BONUS_COINS.
+    Accepts either referral_url or referral_code. If referral_url is provided and not referral_code,
+    extracts the referral code from the URL query parameters.
+    """
+    try:
+        ref_code = (request.referral_code or "").strip() if request.referral_code else None
+
+        if not ref_code:
+            if request.referral_url and request.referral_url.strip():
+                ref_code = extract_referral_code_from_url(request.referral_url)
+                if not ref_code:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Could not extract referral code from referral_url",
+                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Either referral_code or referral_url must be provided",
+                )
+
+        user = await repo.get(options=QueryOptions(filters={"referral_code": ref_code}))
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Referral code not found",
+            )
+
+        bonus_coins = env.REFERRAL_BONUS_COINS
+        reward = await reward_service.reward(
+            user_id=user.id,
+            coins=bonus_coins,
+            title="Referral Link Click",
+            description=f"Reward for referral link click with code {ref_code}",
+        )
+
+        return BaseResponse(
+            success=True,
+            message=f"Referral click recorded and {bonus_coins} coins awarded successfully",
+            data=reward,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Internal Server Error: {e}")
+

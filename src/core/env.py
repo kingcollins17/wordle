@@ -51,6 +51,16 @@ class Environment(BaseSettings):
         validation_alias="FIREBASE_CREDENTIALS_PATH",
     )
 
+    # Referral config
+    referral_bonus_coins: int = Field(
+        default=100,
+        validation_alias="REFERRAL_BONUS_COINS",
+    )
+
+    @property
+    def REFERRAL_BONUS_COINS(self) -> int:
+        return self.referral_bonus_coins
+
     def model_post_init(self, __context: Any) -> None:
         if not self.redis_url and self.redis_host:
             user_part = f"{self.redis_username}:{self.redis_password}@" if self.redis_password else ""
