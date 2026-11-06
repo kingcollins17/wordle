@@ -459,6 +459,8 @@ def extract_referral_code_from_url(url_str: str) -> Optional[str]:
     }
 
     priority_keys = [
+        "referralCode",
+        "referral_code"
         "referralcode",
         "refcode",
         "referral",

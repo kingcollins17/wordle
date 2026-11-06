@@ -25,7 +25,6 @@ rewards_router = APIRouter(prefix="/rewards", tags=[APITags.REWARDS])
 
 class MarkAsReadRequest(BaseModel):
     reward_ids: Optional[List[str]] = None
-    user_id: Optional[str] = None
 
 
 @rewards_router.get(
@@ -35,8 +34,8 @@ class MarkAsReadRequest(BaseModel):
 )
 async def list_unread_rewards(
     user_id: Optional[str] = Query(None, description="Target user ID (falls back to auth headers)"),
-    limit: Optional[int] = Query(None, ge=1, le=100),
-    offset: Optional[int] = Query(None, ge=0),
+    page: int = Query(1, ge=1, description="Page number"),
+    per_page: int = Query(50, ge=1, le=100, description="Items per page"),
     current_user: Optional[User] = Depends(get_optional_user),
     session: AsyncSession = Depends(get_async_session),
 ) -> BaseResponse[List[Reward]]:
@@ -48,15 +47,14 @@ async def list_unread_rewards(
         )
 
     try:
+        offset = (page - 1) * per_page
         stmt = (
             select(Reward)
             .where(Reward.user_id == target_user_id, Reward.is_read == False)
             .order_by(col(Reward.created_at).desc())
+            .limit(per_page)
+            .offset(offset)
         )
-        if limit is not None:
-            stmt = stmt.limit(limit)
-        if offset is not None:
-            stmt = stmt.offset(offset)
 
         result = await session.exec(stmt)
         rewards = list(result.all())
@@ -112,12 +110,12 @@ async def mark_reward_as_read(
 )
 async def mark_rewards_as_read(
     payload: MarkAsReadRequest,
-    current_user: Optional[User] = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     service: RewardService = Depends(get_reward_service),
     session: AsyncSession = Depends(get_async_session),
 ) -> BaseResponse[dict]:
     try:
-        target_user_id = payload.user_id or (current_user.id if current_user else None)
+        target_user_id = current_user.id
         marked_count = 0
 
         if payload.reward_ids:
