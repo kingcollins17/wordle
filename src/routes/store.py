@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 
 store_router = APIRouter(prefix="/store", tags=[APITags.STORE])
 
-coin_pack_500 = "coin_pack_500"
+coin_pack_550 = "coin_pack_550"
 coin_pack_1500 = "coin_pack_1500"
 coin_pack_5000 = "coin_pack_5000"
 coin_pack_15000 = "coin_pack_15000"
 
 product_coins = {
-    coin_pack_500: 500,
+    coin_pack_550: 550,
     coin_pack_1500: 1500,
     coin_pack_5000: 5000,
     coin_pack_15000: 15000,
@@ -31,17 +31,21 @@ powerup_word_meaning = "word_meaning"
 powerup_reveal_letter = "reveal_letter"
 
 product_powerups = {
-    powerup_reveal_letter: {"price": 500, "quantity": 1},
-    powerup_fish_out: {"price": 800, "quantity": 1},
+    # Individual purchases
+    powerup_reveal_letter: {"price": 800, "quantity": 1},
+    powerup_fish_out: {"price": 200, "quantity": 1},
     powerup_word_meaning: {"price": 1200, "quantity": 1},
-    "reveal_letter_pack_10": {"price": 4000, "quantity": 10},
-    "fish_out_pack_10": {"price": 6400, "quantity": 10},
-    "word_meaning_pack_10": {"price": 9600, "quantity": 10},
-    "reveal_letter_pack_25": {"price": 8000, "quantity": 25},
-    "fish_out_pack_25": {"price": 13000, "quantity": 25},
-    "word_meaning_pack_25": {"price": 19500, "quantity": 25},
-}
 
+    # Packs of 10
+    "reveal_letter_pack_10": {"price": 6000, "quantity": 10},
+    "fish_out_pack_10": {"price": 1200, "quantity": 10},
+    "word_meaning_pack_10": {"price": 9000, "quantity": 10},
+
+    # Packs of 25
+    "reveal_letter_pack_25": {"price": 12500, "quantity": 25},
+    "fish_out_pack_25": {"price": 2500, "quantity": 25},
+    "word_meaning_pack_25": {"price": 18750, "quantity": 25},
+}
 
 @store_router.post("/purchase/{product_id}", response_model=BaseResponse)
 async def purchase_item(

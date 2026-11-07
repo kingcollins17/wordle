@@ -1,3 +1,4 @@
+
 import json
 import logging
 import random
@@ -12,6 +13,7 @@ from sqlalchemy import update as sqlalchemy_update
 from src.core.api_tags import APITags
 from src.core.base_response import BaseResponse
 from src.core.models.game import Game, GameStatus, Player
+from src.fcm_service import get_fcm_service, FCMService
 from src.core.models.user import User
 from src.core.models.word import Word
 from src.core.query_options import QueryOptions
@@ -154,6 +156,7 @@ async def join_game(
     user_repo: Repository[User] = Depends(GetRepository(User)),
     word_repo: Repository[Word] = Depends(GetRepository(Word)),
     ws_manager: WebSocketManager = Depends(get_websocket_manager),
+    fcm:FCMService =Depends(get_fcm_service)
 ):
     """
     Join an existing waiting game session as Player 2 using a 4-digit room code.
@@ -187,6 +190,30 @@ async def join_game(
 
     updated_game = await game_repo.update(game)
     await cancel_user_waiting_games([game.player_1, user.id], session=session, current_game_id=game.id)
+
+    # Notify opponent (Player 1) via FCM that Player 2 joined
+    try:
+        opponent = await user_repo.get(id=game.player_1)
+        if opponent and opponent.device_reg_token:
+            notification = fcm.create_notification(
+                title="Opponent Joined!",
+                body=f"{user.username or 'An opponent'} joined your game. It's your turn!",
+            )
+            data = {
+                "type": "game_joined",
+                "game_id": updated_game.id,
+                "room_code": updated_game.room_code,
+                "opponent_id": user.id,
+                "opponent_username": (user.username or ""),
+            }
+            fcm.send(
+                token=opponent.device_reg_token,
+                notification=notification,
+                data=data,
+                android_config=fcm.create_android_config(priority="high"),
+            )
+    except Exception as e:
+        logger.error(f"Failed to send FCM notification to opponent {game.player_1}: {e}")
 
     return BaseResponse(
         message="Joined game successfully. Game is now in progress.",
